@@ -300,7 +300,7 @@ with st.sidebar:
     )
     
 # Main title in content area
-st.title("CLAMSer: CLAMS Data Analyzer")
+st.title("CLAMSer: CLAMS Data Analyzer adapted for Oxymax-CLAMS-CF Machine ")
 
 # Helper functions
 def detect_outliers(df, z_score_threshold=2):
