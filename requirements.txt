@@ -4,4 +4,6 @@ numpy
 plotly
 matplotlib
 scipy
-datetime
+scikit-posthocs
+statsmodels
+markdown
