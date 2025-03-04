@@ -865,64 +865,185 @@ def verify_file_type(file, expected_type):
                     mime="text/csv",
                     help="Download the results to verify calculations independently"
                 )
-def enhanced_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window):
-    """Enhanced statistical analysis tab with advanced visualization and comprehensive testing"""
+def simplified_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window):
+    """Simplified, user-friendly statistical analysis with educational elements"""
     with tab2:
-        st.subheader("Group Statistical Analysis")
+        # Create header with educational introduction
+        st.header("📈 Statistical Analysis")
         
-        # Define colors list for consistent group coloring across plots
-        colors = ["#4285F4", "#EA4335", "#FBBC05", "#34A853", "#8A2BE2", "#FF7F00", "#FF69B4", "#1E90FF"]
-        
-        # Get group assignments from session state
-        if 'group_assignments' not in st.session_state or raw_data is None:
-            st.warning("Please assign groups in the Overview tab first")
+        # Educational introduction section
+        with st.expander("🎓 Getting Started with Statistics", expanded=True):
+            edu_container = st.container()
+
+        with edu_container:
+            st.markdown("""
+            ## Welcome to CLAMSer Statistical Analysis
+            
+            This tab helps you understand differences between your experimental groups.
+            
+            ### 📘 Quick Guide:
+            1. **Assign groups** in the Overview tab
+            2. **Select analysis options** below
+            3. **Interpret results** with our easy-to-understand visualizations
+            
+            ### 📊 Understanding Your Results:
+            - **p-value < 0.05** suggests a statistically significant difference between groups
+            - **Error bars** show standard error of mean (SEM) by default
+            - **Bar charts** compare groups directly
+            - **Line graphs** show how values change over 24 hours
+            """)
+            
+            # Create two columns for basic stats concepts
+            st.markdown("### Statistical Concepts")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**❓ What is a p-value?**")
+                st.markdown("""
+                A **p-value** tells you how likely your results occurred by random chance.
+                
+                - **p < 0.05:** Strong evidence of a real difference (significant)
+                - **p > 0.05:** Not enough evidence (not significant)
+                
+                Think of it like this: A p-value of 0.03 means there's only a 3% chance that the difference you see is due to random chance.
+                """)
+                
+                st.markdown("**❓ What do error bars show?**")
+                st.markdown("""
+                **Error bars** represent the variability in your data.
+                
+                By default, we show **Standard Error of Mean (SEM)**, which indicates how precisely you know the true mean.
+                
+                Smaller error bars = more precise measurement
+                """)
+            
+            with col2:
+                st.markdown("**❓ How to interpret significance**")
+                st.markdown("""
+                Statistical significance (p < 0.05) suggests the difference between groups is real, not random variation.
+                
+                Look for:
+                - **Asterisks (*)** on graphs indicating significance
+                - **p-values** in the results tables
+                - **Non-overlapping error bars** often (but not always) indicate significant differences
+                """)
+                
+                st.markdown("**❓ What's the light/dark cycle?**")
+                st.markdown("""
+                For rodents:
+                - **Light cycle (7AM-7PM):** Resting period (less active)
+                - **Dark cycle (7PM-7AM):** Active period (more active)
+                
+                Different parameters may show stronger differences during specific cycles.
+                """)
+
+        # Check if groups have been assigned
+        if 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
+            st.warning("⚠️ Please assign groups in the Overview tab first")
             return
             
+        # Get group assignments from session state
         group_assignments = st.session_state['group_assignments']
         
-        if group_assignments.empty:
-            st.warning("Please assign groups in the Overview tab first")
+        # Main Analysis Section
+        st.markdown("---")
+        st.subheader("Group Comparison")
+        
+        # Create a more distinct separation between settings and analysis info
+        st.markdown("### Settings")
+
+        # Cycle selection with visual indicators
+        cycle = st.radio(
+            "Select data to analyze:",
+            ["Light Cycle (7AM-7PM)", "Dark Cycle (7PM-7AM)", "24-hour Average"],
+            key="simple_cycle_selector",
+            help="Choose which part of the day to analyze"
+        )
+
+        # Group selection
+        available_groups = sorted(group_assignments['Group'].unique())
+        selected_groups = st.multiselect(
+            "Select groups to compare:",
+            options=available_groups,
+            default=available_groups[:min(4, len(available_groups))],
+            help="Choose which experimental groups to include in analysis"
+        )
+
+        # Error bar type with simpler options
+        error_bar_type = st.radio(
+            "Error bar type:",
+            ["Standard Error (SEM)", "Standard Deviation (SD)"],
+            index=0,
+            help="SEM shows precision of the mean, SD shows data spread"
+        )
+
+        # Add a visual separator
+        st.markdown("---")
+
+        # Analysis information in its own section
+        st.markdown("### Analysis Information")
+        st.markdown(f"""
+        You're analyzing **{parameter}** ({parameter_descriptions.get(parameter, '')}) 
+        for the selected groups during the **{cycle}**.
+
+        **What this tells you:**
+        - Differences in {parameter} between experimental groups
+        - Statistical significance of these differences
+        - Typical values for each group
+
+        **Tip:** 
+        For metabolic parameters (VO2, VCO2, HEAT), differences are often most 
+        pronounced during the dark cycle when animals are most active.
+        """)
+        
+        # Validate we have enough groups selected
+        if len(selected_groups) < 2:
+            st.warning("⚠️ Please select at least two groups to compare")
             return
             
-        # Debug info in expandable section
-        with st.expander("Debug Information", expanded=False):
-            st.write(f"Raw data points: {len(raw_data)}")
-            st.write(f"Groups assigned: {len(group_assignments['Group'].unique())}")
-            
-            # Create mapping function to handle the specific cage ID formats
-            def normalize_cage_id(cage_str):
-                # Extract just the numeric part
-                import re
-                match = re.search(r'(\d+)', str(cage_str))
-                if not match:
-                    return None
-                
-                cage_num = match.group(1)
-                
-                # Special handling for 2-digit IDs
-                if len(cage_num) == 2:
-                    # If it starts with '0', like '01', convert to '101'
-                    if cage_num.startswith('0'):
-                        return '1' + cage_num
-                    # If it's '10', '11', '12', convert to '110', '111', '112'
-                    else:
-                        return '1' + cage_num
-                
-                # If it's already a 3-digit ID, keep it as is
-                return cage_num
-            
-            # Apply the normalization to both datasets
-            raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id)
-            group_assignments['normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
-            
-            # Show sample of each dataset
-            st.write("Sample of raw data:")
-            st.dataframe(raw_data[['cage', 'normalized_cage_id', 'value']].head())
-            
-            st.write("Sample of group assignments:")
-            st.dataframe(group_assignments.head())
+        # Prepare data for analysis
+        # Convert cycle selection to filter
+        if "Light Cycle" in cycle:
+            cycle_filter = True
+            cycle_name = "Light Cycle"
+        elif "Dark Cycle" in cycle:
+            cycle_filter = False
+            cycle_name = "Dark Cycle"
+        else:  # 24-hour Average
+            cycle_filter = None
+            cycle_name = "24-hour Average"
         
         # Join the datasets using the normalized IDs
+        # Create mapping function to handle the cage ID formats
+        def normalize_cage_id(cage_str):
+            # Extract just the numeric part
+            import re
+            match = re.search(r'(\d+)', str(cage_str))
+            if not match:
+                return None
+            
+            cage_num = match.group(1)
+            
+            # Special handling for 2-digit IDs
+            if len(cage_num) == 2:
+                # If it starts with '0', like '01', convert to '101'
+                if cage_num.startswith('0'):
+                    return '1' + cage_num
+                # If it's '10', '11', '12', convert to '110', '111', '112'
+                else:
+                    return '1' + cage_num
+            
+            # If it's already a 3-digit ID, keep it as is
+            return cage_num
+        
+        # Apply the normalization to raw_data
+        raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id)
+        
+        # Apply the normalization to group_assignments (if not already done)
+        if 'normalized_cage_id' not in group_assignments.columns:
+            group_assignments['normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
+        
+        # Join the datasets
         grouped_data = pd.merge(
             raw_data, 
             group_assignments[['normalized_cage_id', 'Group', 'Subject ID']], 
@@ -930,482 +1051,515 @@ def enhanced_statistical_analysis(tab2, raw_data, results, parameter, parameter_
             how='inner'
         )
         
+        # Filter for selected groups
+        grouped_data = grouped_data[grouped_data['Group'].isin(selected_groups)]
+        
         if len(grouped_data) == 0:
             st.error("No data could be matched to your group assignments. Please check your group assignments and try again.")
             return
-            
-        # Show success rate
-        st.info(f"Successfully joined {len(grouped_data)} data points across {grouped_data['Group'].nunique()} groups")
-            
-        # Create tabs for different types of analysis
-        stat_tab1, stat_tab2, stat_tab3, stat_tab4 = st.tabs([
-            "📊 Group Comparisons", 
-            "📈 Time Series Analysis", 
-            "🔍 Statistical Tests",
-            "📋 Summary Report"
-        ])
         
-        with stat_tab1:
-            st.subheader("Group Comparison")
+        # Calculate group statistics based on cycle selection
+        if cycle_filter is not None:  # Light or Dark cycle
+            group_stats = grouped_data[grouped_data['is_light'] == cycle_filter].groupby(['Group', 'Subject ID'])['value'].agg([
+                ('Mean', 'mean')
+            ]).reset_index().groupby('Group').agg({
+                'Mean': ['mean', 'std', 'sem', 'count'],
+                'Subject ID': 'nunique'
+            })
+        else:  # 24-hour Average
+            group_stats = grouped_data.groupby(['Group', 'Subject ID'])['value'].agg([
+                ('Mean', 'mean')
+            ]).reset_index().groupby('Group').agg({
+                'Mean': ['mean', 'std', 'sem', 'count'],
+                'Subject ID': 'nunique'
+            })
+        
+        # Flatten the multi-index columns
+        group_stats.columns = ['_'.join(col).strip() for col in group_stats.columns.values]
+        group_stats = group_stats.reset_index()
+        
+        # Rename columns for clarity
+        group_stats = group_stats.rename(columns={
+            'Mean_mean': 'Mean',
+            'Mean_std': 'SD',
+            'Mean_sem': 'SEM',
+            'Mean_count': 'Data_Points',
+            'Subject ID_nunique': 'N'
+        })
+        
+        # Calculate 95% CI
+        from scipy import stats
+        
+        # Add 95% CI
+        group_stats['CI_95_Lower'] = group_stats['Mean'] - stats.t.ppf(0.975, group_stats['N']-1) * group_stats['SEM']
+        group_stats['CI_95_Upper'] = group_stats['Mean'] + stats.t.ppf(0.975, group_stats['N']-1) * group_stats['SEM']
+        
+        # Filter group_stats to only include selected groups (in the same order)
+        group_stats = group_stats[group_stats['Group'].isin(selected_groups)]
+        group_stats['Group'] = pd.Categorical(group_stats['Group'], categories=selected_groups, ordered=True)
+        group_stats = group_stats.sort_values('Group')
+        
+        # Calculate statistics and create visualizations
+        # ===============================================
+
+        # Create bar chart
+        st.subheader(f"{parameter} Comparison by Group ({cycle_name})")
+
+        # Create the bar chart
+        fig = go.Figure()
+
+        # Define colors for consistency
+        colors = ["#4285F4", "#EA4335", "#FBBC05", "#34A853", "#8A2BE2", "#FF7F00", "#FF69B4", "#1E90FF"]
+
+        # Determine error bar values based on user selection
+        if "Standard Error" in error_bar_type:
+            error_values = group_stats['SEM'].values
+            error_title = "Standard Error of Mean"
+        else:  # Standard Deviation
+            error_values = group_stats['SD'].values
+            error_title = "Standard Deviation"
+
+        # Add bars for each group
+        for i, row in enumerate(group_stats.itertuples()):
+            color = colors[i % len(colors)]
             
-            # Enhanced cycle selection with visual indicators
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                cycle = st.radio(
-                    "Select cycle to compare:",
-                    ["Light", "Dark", "24-hour Average"],
-                    key="stat_cycle_selector"
+            # Get error value for this row
+            error_val = error_values[i]
+            
+            # Add the bar
+            fig.add_trace(go.Bar(
+                x=[row.Group],
+                y=[row.Mean],
+                name=row.Group,
+                marker_color=color,
+                error_y=dict(
+                    type='data',
+                    array=[error_val],
+                    visible=True
+                ),
+                width=0.6,
+                hovertemplate=f"<b>{row.Group}</b><br>Mean: %{{y:.2f}}<br>N: {row.N}<br>{error_title}: {error_val:.2f}<extra></extra>"
+            ))
+
+        # Run appropriate statistical test
+        p_value = None
+        test_name = None
+        test_stat = None
+
+        if len(selected_groups) == 2:  # t-test for 2 groups
+            group1, group2 = selected_groups[0], selected_groups[1]
+            
+            # Get data for both groups
+            if cycle_filter is None:  # 24-hour average
+                g1_data = grouped_data[grouped_data['Group'] == group1].groupby('Subject ID')['value'].mean()
+                g2_data = grouped_data[grouped_data['Group'] == group2].groupby('Subject ID')['value'].mean()
+            else:
+                g1_data = grouped_data[(grouped_data['Group'] == group1) & 
+                                    (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean()
+                g2_data = grouped_data[(grouped_data['Group'] == group2) & 
+                                    (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean()
+            
+            # Perform t-test if enough data
+            if len(g1_data) > 1 and len(g2_data) > 1:
+                t_stat, p_value = stats.ttest_ind(g1_data, g2_data, equal_var=False)
+                test_stat = t_stat
+                test_name = "t-test"
+
+        elif len(selected_groups) > 2:  # ANOVA for 3+ groups
+            # Prepare data for ANOVA
+            anova_data = []
+            
+            for group in selected_groups:
+                if cycle_filter is None:  # 24-hour average
+                    group_values = grouped_data[grouped_data['Group'] == group].groupby('Subject ID')['value'].mean().values
+                else:
+                    group_values = grouped_data[(grouped_data['Group'] == group) & 
+                                            (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean().values
+                
+                if len(group_values) > 0:
+                    anova_data.append(group_values)
+            
+            # Run ANOVA if we have data for all groups
+            if all(len(data) > 0 for data in anova_data):
+                f_stat, p_value = stats.f_oneway(*anova_data)
+                test_stat = f_stat
+                test_name = "ANOVA"
+
+        # Add annotation about statistical significance
+        if p_value is not None:
+            significance = ""
+            if p_value < 0.001:
+                significance = "***"
+            elif p_value < 0.01:
+                significance = "**"
+            elif p_value < 0.05:
+                significance = "*"
+            
+            if test_name == "t-test":
+                fig.add_annotation(
+                    x=0.5,
+                    y=1.1,
+                    xref="paper",
+                    yref="paper",
+                    text=f"t-test: t={test_stat:.2f}, p={p_value:.4f} {significance}",
+                    showarrow=False,
+                    font=dict(size=14)
+                )
+            else:  # ANOVA
+                fig.add_annotation(
+                    x=0.5,
+                    y=1.1,
+                    xref="paper",
+                    yref="paper",
+                    text=f"ANOVA: F={test_stat:.2f}, p={p_value:.4f} {significance}",
+                    showarrow=False,
+                    font=dict(size=14)
+                )
+            
+            # Add significance bars for t-test
+            if test_name == "t-test" and p_value < 0.05:
+                # Get y-range for positioning significance bars
+                y_max = max(group_stats['Mean']) * 1.1
+                y_range = y_max - min(group_stats['Mean'])
+                
+                # Add significance bar
+                fig.add_shape(
+                    type="line",
+                    x0=0,
+                    y0=y_max + 0.05 * y_range,
+                    x1=1,
+                    y1=y_max + 0.05 * y_range,
+                    line=dict(color="black", width=2)
                 )
                 
-                # Add significance level selection
-                alpha_level = st.selectbox(
-                    "Significance level (α):",
-                    [0.05, 0.01, 0.001],
-                    help="Statistical significance threshold",
-                    key="alpha_level"
+                # Add asterisk
+                fig.add_annotation(
+                    x=0.5,
+                    y=y_max + 0.1 * y_range,
+                    text=significance,
+                    showarrow=False,
+                    font=dict(size=20)
                 )
-                
-                # Add error bar type selection
-                error_bar_type = st.radio(
-                    "Error bar type:",
-                    ["SEM", "SD", "95% CI"],
-                    help="SEM: Standard Error of Mean, SD: Standard Deviation, CI: Confidence Interval",
-                    key="error_bar_type"
-                )
+
+        # Update layout
+        fig.update_layout(
+            xaxis_title="Group",
+            yaxis_title=f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})",
+            showlegend=False,
+            height=500,
+            margin=dict(t=100)  # Make room for annotations
+        )
+
+        # Set y-axis range with headroom for significance bars
+        y_max = max(group_stats['Mean']) * 1.3
+        fig.update_yaxes(range=[0, y_max])
+
+        # Display plot
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Add more visible significance indicator
+        if p_value is not None:
+            result_box = st.container()
+            with result_box:
+                if p_value < 0.05:
+                    st.success(f"### ✅ Statistically Significant Difference Detected\n**p-value = {p_value:.4f}**\n\nThere is strong evidence that the groups differ.")
+                else:
+                    st.info(f"### ℹ️ No Statistically Significant Difference\n**p-value = {p_value:.4f}**\n\nThere isn't enough evidence to conclude the groups differ.")
             
-            with col2:
+            with st.expander("How is this p-value calculated?"):
                 st.markdown(f"""
-                ### Analysis Settings
-                - Parameter: **{parameter}** ({parameter_descriptions.get(parameter, '')})
-                - Time Window: **{time_window}**
-                - Cycle: **{cycle}**
-                - Significance Level: **α = {alpha_level}**
-                - Error Bars: **{error_bar_type}**
+                The p-value is calculated using:
+                
+                - **{test_name}**: {test_name == 't-test' and "Comparing means between two groups" or "Comparing means across multiple groups"}
+                - Based on data from the **{cycle_name}**
+                - Specifically, we used {test_name == 't-test' and "Welch's t-test (does not assume equal variances)" or "one-way ANOVA"}
+                
+                The p-value will change if you select different cycles (light vs. dark) because the statistical test 
+                is performed on different subsets of your data. For example, metabolic parameters often show stronger 
+                differences during dark cycle when animals are more active.
                 """)
             
-            # Calculate group statistics based on cycle selection
-            if cycle == "Light":
-                group_stats = grouped_data[grouped_data['is_light'] == True].groupby(['Group', 'Subject ID'])['value'].agg([
-                    ('Mean', 'mean')
-                ]).reset_index().groupby('Group').agg({
-                    'Mean': ['mean', 'std', 'sem', 'count'],
-                    'Subject ID': 'nunique'
-                })
-                cycle_filter = True
-            elif cycle == "Dark":
-                group_stats = grouped_data[grouped_data['is_light'] == False].groupby(['Group', 'Subject ID'])['value'].agg([
-                    ('Mean', 'mean')
-                ]).reset_index().groupby('Group').agg({
-                    'Mean': ['mean', 'std', 'sem', 'count'],
-                    'Subject ID': 'nunique'
-                })
-                cycle_filter = False
-            else:  # 24-hour Average
-                group_stats = grouped_data.groupby(['Group', 'Subject ID'])['value'].agg([
-                    ('Mean', 'mean')
-                ]).reset_index().groupby('Group').agg({
-                    'Mean': ['mean', 'std', 'sem', 'count'],
-                    'Subject ID': 'nunique'
-                })
-                cycle_filter = None
+            st.markdown("")  # Add some space
+
+        # Make bar chart explanation collapsible
+        with st.expander("What this bar chart shows"):
+            st.markdown(f"""
+            ### Understanding the Bar Chart
             
-            # Flatten the multi-index columns
-            group_stats.columns = ['_'.join(col).strip() for col in group_stats.columns.values]
-            group_stats = group_stats.reset_index()
+            **The Bar Chart**: 
+            - Each bar represents the **average {parameter} value** for all animals in that experimental group
+            - Values are calculated from the {cycle_name.lower()} data
+            - For each animal, we first calculate its individual mean, then average these means for the group
+            - **Error bars** show {'the standard error of the mean (SEM)' if 'Standard Error' in error_bar_type else 'the standard deviation (SD)'}, indicating the precision of our measurement
+            """)
+
+        with st.expander("See details about the calculation"):
+            st.markdown(f"""
+            For example, if "{selected_groups[0]}" has 3 animals with individual averages of 95, 100, and 105:
             
-            # Rename columns for clarity
-            group_stats = group_stats.rename(columns={
-                'Mean_mean': 'Mean',
-                'Mean_std': 'SD',
-                'Mean_sem': 'SEM',
-                'Mean_count': 'Data_Points',
-                'Subject ID_nunique': 'N'
-            })
+            1. Group Mean = (95 + 100 + 105) ÷ 3 = 100
+            2. Standard Deviation = 5
+            3. SEM = 5 ÷ √3 = 2.89
             
-            # Calculate 95% CI
-            from scipy import stats
+            The bar height would be 100, with error bars extending ±2.89 if using SEM.
+            """)
+
+        # Move Group Statistics here instead of in a side column
+        st.subheader("Group Statistics")
+
+        # Format table for better readability
+        display_stats = group_stats[['Group', 'N', 'Mean', 'SD', 'SEM']].copy()
+        display_stats['Mean'] = display_stats['Mean'].round(2)
+        display_stats['SD'] = display_stats['SD'].round(2)
+        display_stats['SEM'] = display_stats['SEM'].round(2)
+
+        # Display a cleaner subset of columns
+        st.dataframe(display_stats, use_container_width=True)
+
+        # Add explanation of the statistics
+        with st.expander("📊 What these statistics mean"):
+            st.markdown("""
+            - **N**: Number of animals in each group
+            - **Mean**: Average value for each group
+            - **SD**: Standard Deviation (spread of individual values)
+            - **SEM**: Standard Error of the Mean (precision of the average)
+            """)
+
+        # Add effect size calculation for t-test
+        if test_name == "t-test" and p_value is not None:
+            st.subheader("Effect Size")
             
-            # Add 95% CI
-            group_stats['CI_95_Lower'] = group_stats['Mean'] - stats.t.ppf(0.975, group_stats['N']-1) * group_stats['SEM']
-            group_stats['CI_95_Upper'] = group_stats['Mean'] + stats.t.ppf(0.975, group_stats['N']-1) * group_stats['SEM']
+            group1, group2 = selected_groups[0], selected_groups[1]
+            mean1 = group_stats[group_stats['Group'] == group1]['Mean'].iloc[0]
+            mean2 = group_stats[group_stats['Group'] == group2]['Mean'].iloc[0]
+            sd1 = group_stats[group_stats['Group'] == group1]['SD'].iloc[0]
+            sd2 = group_stats[group_stats['Group'] == group2]['SD'].iloc[0]
+            n1 = group_stats[group_stats['Group'] == group1]['N'].iloc[0]
+            n2 = group_stats[group_stats['Group'] == group2]['N'].iloc[0]
             
-            # Display enhanced statistics table
-            st.subheader("Group Statistics")
+            # Calculate Cohen's d
+            # Pooled standard deviation
+            pooled_sd = np.sqrt(((n1 - 1) * sd1**2 + (n2 - 1) * sd2**2) / (n1 + n2 - 2))
+            cohen_d = abs(mean1 - mean2) / pooled_sd
             
-            # Format table for better readability
-            display_stats = group_stats.copy()
-            display_stats['Mean'] = display_stats['Mean'].round(2)
-            display_stats['SD'] = display_stats['SD'].round(2)
-            display_stats['SEM'] = display_stats['SEM'].round(2)
-            display_stats['CI_95'] = display_stats.apply(
-                lambda x: f"{x['CI_95_Lower']:.2f} - {x['CI_95_Upper']:.2f}", axis=1
-            )
+            # Interpret Cohen's d
+            effect_interpretation = "Small" if cohen_d < 0.5 else "Medium" if cohen_d < 0.8 else "Large"
             
-            # Display a cleaner subset of columns
-            st.dataframe(display_stats[['Group', 'N', 'Mean', 'SD', 'SEM', 'CI_95']])
+            # Calculate percent difference
+            percent_diff = abs(mean1 - mean2) / ((mean1 + mean2) / 2) * 100
             
-            # Create enhanced visualization
-            if not group_stats.empty:
-                st.subheader(f"{parameter} Comparison by Group ({cycle} Cycle)")
+            effect_cols = st.columns(2)
+            with effect_cols[0]:
+                # Display effect size metrics
+                st.metric("Cohen's d", f"{cohen_d:.2f}", f"{effect_interpretation} effect")
+            
+            with effect_cols[1]:
+                st.metric("Percent Difference", f"{percent_diff:.1f}%", 
+                        f"{group1 if mean1 > mean2 else group2} higher")
+            
+            with st.expander("🔍 Understanding effect size"):
+                st.markdown(f"""
+                **Cohen's d = {cohen_d:.2f}** indicates a **{effect_interpretation.lower()} effect size**.
                 
-                # Determine error bar values based on user selection
-                if error_bar_type == "SEM":
-                    error_values = group_stats['SEM'].values
-                    error_title = "Standard Error of Mean"
-                elif error_bar_type == "SD":
-                    error_values = group_stats['SD'].values
-                    error_title = "Standard Deviation"
-                else:  # 95% CI
-                    # Calculate CI half-width for each row and convert to numpy array
-                    error_values = ((group_stats['CI_95_Upper'] - group_stats['CI_95_Lower'])/2).values
-                    error_title = "95% Confidence Interval"
-
-                # Create a single figure for all groups
+                - **Small effect**: d < 0.5
+                - **Medium effect**: 0.5 < d < 0.8
+                - **Large effect**: d > 0.8
+                
+                Even if a difference is statistically significant, a small effect size may not be biologically meaningful.
+                """)
+        
+        # Time Pattern Analysis Section
+        # ===============================
+        
+        st.markdown("---")
+        st.subheader("24-Hour Pattern Analysis")
+        
+        st.markdown("""
+        This analysis shows how your parameter changes over the 24-hour cycle.
+        Dark regions indicate dark cycle (7PM-7AM), light regions indicate light cycle (7AM-7PM).
+        """)
+        
+        # Group selection
+        time_pattern_groups = st.multiselect(
+            "Select groups to display:",
+            options=selected_groups,
+            default=selected_groups[:min(3, len(selected_groups))],
+            key="time_pattern_group_select"
+        )
+        
+        if not time_pattern_groups:
+            st.warning("Please select at least one group to display the time pattern")
+        else:
+            # Calculate hourly averages for each group
+            hourly_data = []
+            
+            for group in time_pattern_groups:
+                # Get cages for this group
+                group_cages = group_assignments[group_assignments['Group'] == group]['normalized_cage_id'].unique()
+                
+                # Filter data for these cages
+                group_data = grouped_data[grouped_data['Group'] == group].copy()
+                
+                # Calculate hourly averages
+                hourly_avg = group_data.groupby('hour')['value'].agg(['mean', 'sem']).reset_index()
+                hourly_avg['Group'] = group
+                hourly_data.append(hourly_avg)
+            
+            if hourly_data:
+                # Combine all groups
+                hourly_df = pd.concat(hourly_data)
+                
+                # Create time series plot
                 fig = go.Figure()
-
-                # Add bars for each group
-                for i, row in enumerate(group_stats.itertuples()):
+                
+                # Color palette
+                colors = ["#4285F4", "#EA4335", "#FBBC05", "#34A853", "#8A2BE2", "#FF7F00", "#FF69B4", "#1E90FF"]
+                
+                # Add line for each group
+                for i, group in enumerate(time_pattern_groups):
+                    group_hourly = hourly_df[hourly_df['Group'] == group]
                     color = colors[i % len(colors)]
                     
-                    # Get error value for this row
-                    error_val = error_values[i]
+                    # Add main line
+                    fig.add_trace(go.Scatter(
+                        x=group_hourly['hour'],
+                        y=group_hourly['mean'],
+                        mode='lines+markers',
+                        name=group,
+                        line=dict(color=color, width=3),
+                        marker=dict(size=8)
+                    ))
                     
-                    # Add the bar
-                    fig.add_trace(go.Bar(
-                        x=[row.Group],
-                        y=[row.Mean],
-                        name=row.Group,
-                        marker_color=color,
-                        error_y=dict(
-                            type='data',
-                            array=[error_val],
-                            visible=True
-                        ),
-                        width=0.6,
-                        hovertemplate=f"<b>{row.Group}</b><br>Mean: %{{y:.2f}}<br>N: {row.N}<br>{error_title}: {error_val:.2f}<extra></extra>"
+                    # Add error bands (SEM)
+                    fig.add_trace(go.Scatter(
+                        x=group_hourly['hour'].tolist() + group_hourly['hour'].tolist()[::-1],
+                        y=(group_hourly['mean'] + group_hourly['sem']).tolist() + 
+                           (group_hourly['mean'] - group_hourly['sem']).tolist()[::-1],
+                        fill='toself',
+                        fillcolor=color.replace(')', ', 0.2)').replace('rgb', 'rgba'),
+                        line=dict(color='rgba(0,0,0,0)'),
+                        hoverinfo='skip',
+                        showlegend=False
                     ))
                 
-                # Perform appropriate statistical test and add annotations
-                p_values = {}
-                if len(group_stats) > 2:  # ANOVA for 3+ groups
-                    # First get the raw data organized by group for ANOVA
-                    anova_data = []
-                    group_names = []
-                    
-                    for group in group_stats['Group'].unique():
-                        if cycle_filter is None:  # 24-hour average
-                            group_values = grouped_data[grouped_data['Group'] == group].groupby('Subject ID')['value'].mean().values
-                        else:
-                            group_values = grouped_data[(grouped_data['Group'] == group) & 
-                                                       (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean().values
-                        anova_data.append(group_values)
-                        group_names.append(group)
-                    
-                    # Only perform if all groups have data
-                    if all(len(data) > 0 for data in anova_data):
-                        f_stat, p_value = stats.f_oneway(*anova_data)
-                        
-                        # Add ANOVA results to the figure
-                        fig.add_annotation(
-                            x=0.5,
-                            y=1.1,
-                            xref="paper",
-                            yref="paper",
-                            text=f"ANOVA: F={f_stat:.2f}, p={p_value:.4f}" + 
-                                 (f"<b>*</b>" if p_value < alpha_level else " (n.s.)"),
-                            showarrow=False,
-                            font=dict(size=14)
-                        )
-                        
-                        # If significant, perform post-hoc tests
-                        if p_value < alpha_level:
-                            # Perform Tukey's HSD test
-                            from statsmodels.stats.multicomp import pairwise_tukeyhsd
-                            
-                            # Prepare data for Tukey's test
-                            all_data = np.concatenate(anova_data)
-                            all_groups = np.concatenate([[group] * len(data) for group, data in zip(group_names, anova_data)])
-                            
-                            # Perform Tukey's test
-                            res = pairwise_tukeyhsd(all_data, all_groups, alpha=alpha_level)
-                            
-                            # The results are available in a DataFrame
-                            tukey_df = pd.DataFrame(data=res._results_table.data[1:], 
-                                                columns=res._results_table.data[0])
-                            
-                            # Extract p-values for each comparison
-                            p_values = {}
-                            for _, row in tukey_df.iterrows():
-                                group1, group2 = row[0], row[1]  # First and second columns contain group names
-                                reject = row[6] == 'True'  # The reject column is typically the 7th column (index 6)
-                                p_values[(group1, group2)] = "sig" if reject else "ns"
-                
-                elif len(group_stats) == 2:  # t-test for 2 groups
-                    group1, group2 = group_stats['Group'].iloc[0], group_stats['Group'].iloc[1]
-                    
-                    # Get data for both groups
-                    if cycle_filter is None:  # 24-hour average
-                        g1_data = grouped_data[grouped_data['Group'] == group1].groupby('Subject ID')['value'].mean()
-                        g2_data = grouped_data[grouped_data['Group'] == group2].groupby('Subject ID')['value'].mean()
-                    else:
-                        g1_data = grouped_data[(grouped_data['Group'] == group1) & 
-                                              (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean()
-                        g2_data = grouped_data[(grouped_data['Group'] == group2) & 
-                                              (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean()
-                    
-                    # Perform t-test if enough data
-                    if len(g1_data) > 1 and len(g2_data) > 1:
-                        t_stat, p_value = stats.ttest_ind(g1_data, g2_data, equal_var=False)
-                        
-                        # Add significance indicator and p-value to plot
-                        fig.add_annotation(
-                            x=0.5,
-                            y=1.1,
-                            xref="paper",
-                            yref="paper",
-                            text=f"T-test: t={t_stat:.2f}, p={p_value:.4f}" + 
-                                 (f"<b>*</b>" if p_value < alpha_level else " (n.s.)"),
-                            showarrow=False,
-                            font=dict(size=14)
-                        )
-                        
-                        # Store significance for later
-                        p_values[(group1, group2)] = "sig" if p_value < alpha_level else "ns"
-                
-                # Add significance bars if we have p-values
-                if p_values and len(group_stats) > 1:
-                    # Get y-range for positioning significance bars
-                    y_max = max(group_stats['Mean']) * 1.1
-                    y_range = y_max - min(group_stats['Mean'])
-                    
-                    # Add brackets for significant comparisons
-                    if len(group_stats) == 2:
-                        group1, group2 = group_stats['Group'].iloc[0], group_stats['Group'].iloc[1]
-                        
-                        if p_values.get((group1, group2)) == "sig":
-                            # Add significance bar
-                            fig.add_shape(
-                                type="line",
-                                x0=0,
-                                y0=y_max + 0.05 * y_range,
-                                x1=1,
-                                y1=y_max + 0.05 * y_range,
-                                line=dict(color="black", width=2)
-                            )
-                            
-                            # Add asterisk
-                            fig.add_annotation(
-                                x=0.5,
-                                y=y_max + 0.1 * y_range,
-                                text="*",
-                                showarrow=False,
-                                font=dict(size=20)
-                            )
-                
-                # Update layout
-                fig.update_layout(
-                    xaxis_title="Group",
-                    yaxis_title=f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})",
-                    showlegend=False,
-                    height=500,
-                    margin=dict(t=100)  # Make room for annotations
-                )
-                
-                # Set y-axis range with headroom for significance bars
-                y_max = max(group_stats['Mean']) * 1.3
-                fig.update_yaxes(range=[0, y_max])
-                
-                # Display plot
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Add effect size calculation
-                if len(group_stats) == 2:
-                    st.subheader("Effect Size Analysis")
-                    
-                    group1, group2 = group_stats['Group'].iloc[0], group_stats['Group'].iloc[1]
-                    mean1, mean2 = group_stats['Mean'].iloc[0], group_stats['Mean'].iloc[1]
-                    sd1, sd2 = group_stats['SD'].iloc[0], group_stats['SD'].iloc[1]
-                    n1, n2 = group_stats['N'].iloc[0], group_stats['N'].iloc[1]
-                    
-                    # Calculate Cohen's d
-                    # Pooled standard deviation
-                    pooled_sd = np.sqrt(((n1 - 1) * sd1**2 + (n2 - 1) * sd2**2) / (n1 + n2 - 2))
-                    cohen_d = abs(mean1 - mean2) / pooled_sd
-                    
-                    # Interpret Cohen's d
-                    effect_interpretation = "Small" if cohen_d < 0.5 else "Medium" if cohen_d < 0.8 else "Large"
-                    
-                    # Calculate percent difference
-                    percent_diff = abs(mean1 - mean2) / ((mean1 + mean2) / 2) * 100
-                    
-                    # Power analysis
-                    from statsmodels.stats.power import TTestIndPower
-                    power_analysis = TTestIndPower()
-                    power = power_analysis.power(effect_size=cohen_d, nobs1=n1, alpha=alpha_level, ratio=n2/n1)
-                    
-                    # Create columns for the metrics
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric("Cohen's d", f"{cohen_d:.2f}", f"{effect_interpretation} effect")
-                    
-                    with col2:
-                        st.metric("Percent Difference", f"{percent_diff:.1f}%",
-                                f"{group1 if mean1 > mean2 else group2} higher")
-                    
-                    with col3:
-                        st.metric("Statistical Power", f"{power:.2f}",
-                                f"{'Adequate' if power >= 0.8 else 'Low'} power")
-                    
-                    # Add interpretation text
-                    st.markdown(f"""
-                    **Interpretation:**
-                    
-                    - **Effect Size**: The difference between {group1} and {group2} represents a **{effect_interpretation.lower()} effect** (Cohen's d = {cohen_d:.2f}).
-                    - **Magnitude**: {group1 if mean1 > mean2 else group2} is {percent_diff:.1f}% higher than {group2 if mean1 > mean2 else group1}.
-                    - **Statistical Power**: The analysis has {power:.0%} power to detect this effect size, which is {'adequate' if power >= 0.8 else 'low'}.
-                    """)
-                
-                # Add multiple comparisons table for 3+ groups
-                if len(group_stats) > 2 and 'res' in locals():
-                    st.subheader("Multiple Comparisons (Tukey's HSD)")
-                    
-                    # Get the Tukey results as a DataFrame
-                    tukey_df = pd.DataFrame(data=res._results_table.data[1:], 
-                                        columns=res._results_table.data[0])
-                    
-                    # Create a cleaned dataframe for display
-                    tukey_results = pd.DataFrame({
-                        'Group 1': tukey_df.iloc[:, 0],
-                        'Group 2': tukey_df.iloc[:, 1],
-                        'Mean Difference': tukey_df.iloc[:, 2].astype(float),
-                        'p-value': tukey_df.iloc[:, 3].astype(float),
-                        'Significant': tukey_df.iloc[:, 6] == 'True'
-                    })
-                    
-                    # Format for display
-                    tukey_results['Mean Difference'] = tukey_results['Mean Difference'].round(2)
-                    tukey_results['p-value'] = tukey_results['p-value'].apply(lambda p: f"{p:.4f}")
-                    tukey_results['Significant'] = tukey_results['Significant'].apply(lambda s: "Yes *" if s else "No")
-                    
-                    # Calculate percent difference
-                    def calc_percent_diff(row):
-                        group1, group2 = row['Group 1'], row['Group 2']
-                        mean1 = group_stats[group_stats['Group'] == group1]['Mean'].iloc[0]
-                        mean2 = group_stats[group_stats['Group'] == group2]['Mean'].iloc[0]
-                        return abs(mean1 - mean2) / ((mean1 + mean2) / 2) * 100
-                    
-                    tukey_results['% Difference'] = tukey_results.apply(calc_percent_diff, axis=1).round(1)
-                    
-                    # Display the results
-                    st.dataframe(tukey_results)
-                    
-                    # Add note about multiple comparison correction
-                    st.info("* Significance adjusted for multiple comparisons using Tukey's Honestly Significant Difference test")
-        
-        with stat_tab2:
-            st.subheader("Time Series Analysis")
-            
-            # Group selection
-            selected_groups = st.multiselect(
-                "Select groups to display:",
-                options=group_assignments['Group'].unique(),
-                default=group_assignments['Group'].unique()[:min(3, len(group_assignments['Group'].unique()))]
-            )
-            
-            if not selected_groups:
-                st.warning("Please select at least one group")
-            else:
-                # Create time series visualization
-                st.subheader(f"{parameter} Time Course by Group")
-                
-                # Calculate hourly averages for each group
-                hourly_data = []
-                
-                for group in selected_groups:
-                    # Get cages for this group
-                    group_cages = group_assignments[group_assignments['Group'] == group]['normalized_cage_id'].unique()
-                    
-                    # Filter data for these cages
-                    group_data = grouped_data[grouped_data['Group'] == group].copy()
-                    
-                    # Calculate hourly averages
-                    hourly_avg = group_data.groupby('hour')['value'].agg(['mean', 'sem']).reset_index()
-                    hourly_avg['Group'] = group
-                    hourly_data.append(hourly_avg)
-                
-                if hourly_data:
-                    # Combine all groups
-                    hourly_df = pd.concat(hourly_data)
-                    
-                    # Create time series plot
-                    fig = go.Figure()
-                    
-                    # Color palette
-                    colors = ["#4285F4", "#EA4335", "#FBBC05", "#34A853", "#8A2BE2", "#FF7F00", "#FF69B4", "#1E90FF"]
-                    
-                    # Add line for each group
-                    for i, group in enumerate(selected_groups):
-                        group_hourly = hourly_df[hourly_df['Group'] == group]
-                        color = colors[i % len(colors)]
-                        
-                        # Add main line
-                        fig.add_trace(go.Scatter(
-                            x=group_hourly['hour'],
-                            y=group_hourly['mean'],
-                            mode='lines+markers',
-                            name=group,
-                            line=dict(color=color, width=3),
-                            marker=dict(size=8)
-                        ))
-                        
-                        # Add error bands (SEM)
-                        fig.add_trace(go.Scatter(
-                            x=group_hourly['hour'].tolist() + group_hourly['hour'].tolist()[::-1],
-                            y=(group_hourly['mean'] + group_hourly['sem']).tolist() + 
-                               (group_hourly['mean'] - group_hourly['sem']).tolist()[::-1],
-                            fill='toself',
-                            fillcolor=color.replace(')', ', 0.2)').replace('rgb', 'rgba'),
-                            line=dict(color='rgba(0,0,0,0)'),
-                            hoverinfo='skip',
-                            showlegend=False
-                        ))
-                    
-                    # Add shaded region for dark cycle
-                    dark_hours = list(range(0, 7)) + list(range(19, 24))
-                    for hour in dark_hours:
+                # Add shaded regions for dark and light cycles - with higher opacity
+                for hour in range(0, 24):
+                    if hour < 7 or hour >= 19:  # Dark cycle (7PM-7AM)
                         fig.add_vrect(
                             x0=hour - 0.5,
                             x1=hour + 0.5,
-                            fillcolor="rgba(0,0,0,0.1)",
+                            fillcolor="rgba(0,0,0,0.25)",  # Increased opacity for dark cycle
                             layer="below",
                             line_width=0,
                         )
-        
-                    # Update layout
-                    fig.update_layout(
-                        xaxis_title="Hour of Day",
-                        yaxis_title=f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})",
-                        xaxis=dict(
-                            tickmode='array',
-                            tickvals=list(range(0, 24, 2)),
-                            ticktext=[f"{h:02d}:00" for h in range(0, 24, 2)]
-                        ),
-                        height=500,
-                        legend_title="Group",
-                        hovermode="x unified",
-                        margin=dict(t=100)  # Make room for annotations
-                    )
+                    else:  # Light cycle (7AM-7PM)
+                        fig.add_vrect(
+                            x0=hour - 0.5,
+                            x1=hour + 0.5,
+                            fillcolor="rgba(255,255,0,0.15)",  # Increased opacity for light cycle
+                            layer="below",
+                            line_width=0,
+                        )
+
+                # Add more prominent cycle labels
+                fig.add_annotation(
+                    x=3, y=1.12,  # Moved higher
+                    xref="x", yref="paper",
+                    text="Dark Cycle",
+                    showarrow=False,
+                    font=dict(size=16, color="white", family="Arial Black"),  # Bigger, bold, white text
+                    bgcolor="rgba(0,0,0,0.7)",  # Much darker background
+                    bordercolor="white",
+                    borderwidth=2,
+                    borderpad=4
+                )
+
+                fig.add_annotation(
+                    x=13, y=1.12,  # Moved higher
+                    xref="x", yref="paper",
+                    text="Light Cycle",
+                    showarrow=False,
+                    font=dict(size=16, color="black", family="Arial Black"),  # Bigger, bold text
+                    bgcolor="rgba(255,255,0,0.6)",  # Much more visible yellow
+                    bordercolor="black",
+                    borderwidth=2,
+                    borderpad=4
+                )
+
+                fig.add_annotation(
+                    x=21, y=1.12,  # Moved higher
+                    xref="x", yref="paper",
+                    text="Dark Cycle",
+                    showarrow=False,
+                    font=dict(size=16, color="white", family="Arial Black"),  # Bigger, bold, white text
+                    bgcolor="rgba(0,0,0,0.7)",  # Much darker background
+                    bordercolor="white",
+                    borderwidth=2,
+                    borderpad=4
+                )
+                
+                # Update layout
+                fig.update_layout(
+                    title=f"{parameter} 24-Hour Pattern",
+                    xaxis_title="Hour of Day",
+                    yaxis_title=f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})",
+                    xaxis=dict(
+                        tickmode='array',
+                        tickvals=list(range(0, 24, 2)),
+                        ticktext=[f"{h:02d}:00" for h in range(0, 24, 2)]
+                    ),
+                    height=500,
+                    legend_title="Group",
+                    hovermode="x unified"
+                )
+                
+                # Display the plot
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Make time graph explanation collapsible
+                with st.expander("What this 24-hour pattern graph shows"):
+                    st.markdown(f"""
+                    ### Understanding the 24-Hour Pattern Graph
                     
-                    # Display the plot
-                    st.plotly_chart(fig, use_container_width=True)
+                    **The 24-Hour Pattern Graph**:
+                    - This graph shows a "typical day" created by averaging across all days in your selected time window ("{time_window}")
+                    - Each point represents the **average {parameter} value** for a specific hour of the day
+                    - Hours are shown from 0 (12 AM midnight) to 23 (11 PM)
+                    - **Important**: If you selected "{time_window}", data from all {time_window.lower().replace("last ", "")} are combined and averaged for each hour
+                    - For example, all measurements taken at 8:00 AM across {time_window.lower().replace("last ", "")} are averaged into a single data point
+                    - **Shaded bands** around the lines show the standard error (SEM)
+                    - **Background colors** indicate light cycle (yellow) and dark cycle (gray)
                     
-                    # AUC Analysis
-                    st.subheader("Area Under Curve (AUC) Analysis")
+                    This graph helps you identify:
+                    - Consistent circadian patterns in your data
+                    - When your parameter peaks and falls during a typical day
+                    - How the light/dark cycle affects your parameter
+                    - Differences in daily rhythms between experimental groups
+                    
+                    **Note**: This graph does not show how patterns changed from day to day. It creates a single "typical day" profile by combining all days.
+                    """)
+
+                with st.expander("See details about hourly calculation"):
+                    st.markdown(f"""
+                    For example, for the 8 AM data point (hour 8):
+                    
+                    1. All measurements taken at 8:00-8:59 AM across all days are collected
+                    2. These values are averaged to get the mean for hour 8
+                    3. The standard error is calculated to show precision
+                    4. This process is repeated for each hour (0-23)
+                    
+                    This creates a complete 24-hour profile of how your parameter changes throughout the day.
+                    """)
+                
+                # Simplified AUC Analysis - optional and collapsible
+                with st.expander("📊 View Area Under Curve (AUC) Analysis"):
+                    st.markdown("""
+                    **Area Under the Curve (AUC)** provides a measure of the total exposure or activity over time.
+                    """)
                     
                     # Calculate AUC for each group
                     auc_results = []
-                    for group in selected_groups:
+                    for group in time_pattern_groups:
                         group_hourly = hourly_df[hourly_df['Group'] == group]
                         
                         # Calculate total AUC (trapezoidal rule)
@@ -1437,790 +1591,212 @@ def enhanced_statistical_analysis(tab2, raw_data, results, parameter, parameter_
                     
                     # Display AUC results
                     st.dataframe(auc_df.round(2))
-                    
-                    # Create AUC bar chart
-                    auc_fig = go.Figure()
-                    
-                    # Add Total AUC bars
-                    auc_fig.add_trace(go.Bar(
-                        x=auc_df['Group'],
-                        y=auc_df['Total AUC'],
-                        name='Total AUC',
-                        marker_color='green'
-                    ))
-                    
-                    # Add Light Cycle AUC bars
-                    auc_fig.add_trace(go.Bar(
-                        x=auc_df['Group'],
-                        y=auc_df['Light Cycle AUC'],
-                        name='Light Cycle AUC',
-                        marker_color='gold'
-                    ))
-                    
-                    # Add Dark Cycle AUC bars
-                    auc_fig.add_trace(go.Bar(
-                        x=auc_df['Group'],
-                        y=auc_df['Dark Cycle AUC'],
-                        name='Dark Cycle AUC',
-                        marker_color='darkblue'
-                    ))
-                    
-                    # Update layout
-                    auc_fig.update_layout(
-                        title="Area Under Curve Comparison",
-                        xaxis_title="Group",
-                        yaxis_title=f"AUC ({parameter} × hours)",
-                        barmode='group',
-                        height=400
-                    )
-                    
-                    # Display the AUC plot
-                    st.plotly_chart(auc_fig, use_container_width=True)
-                    
-                    # Add AUC interpretation
-                    st.markdown("""
-                    **Area Under Curve (AUC) Interpretation:**
-                    
-                    The AUC represents the total exposure or cumulative effect over time. Higher AUC values indicate:
-                    
-                    - For metabolic parameters (VO2, VCO2, RER, Heat): Greater metabolic activity
-                    - For activity parameters (XTOT, XAMB): Higher activity levels
-                    - For feeding (FEED): Greater food consumption
-                    
-                    Comparing Light vs Dark AUC shows the distribution of activity between day and night.
-                    """)
-                
-        with stat_tab3:
-            st.subheader("Statistical Tests & Assumptions")
-            
-            # Select groups to test
-            test_groups = st.multiselect(
-                "Select groups to analyze:",
-                options=group_assignments['Group'].unique(),
-                default=group_assignments['Group'].unique()[:min(2, len(group_assignments['Group'].unique()))]
-            )
-            
-            if len(test_groups) < 2:
-                st.warning("Please select at least two groups for statistical comparison")
-            else:
-                # Create three columns layout
-                test_col1, test_col2 = st.columns([1, 2])
-                
-                with test_col1:
-                    # Test selection
-                    test_type = st.radio(
-                        "Select test type:",
-                        ["Automatic", "t-test", "ANOVA", "Mann-Whitney U", "Kruskal-Wallis"],
-                        help="Let CLAMSer choose or select a specific test"
-                    )
-                    
-                    # Select cycle for test
-                    test_cycle = st.radio(
-                        "Data to analyze:",
-                        ["Light Cycle", "Dark Cycle", "24-hour Average"],
-                        help="Select which data subset to analyze"
-                    )
-                    
-                    # Run normality test?
-                    run_normality = st.checkbox(
-                        "Test for normality",
-                        value=True,
-                        help="Check if data follows a normal distribution"
-                    )
-                    
-                    # Multiple comparison correction
-                    if len(test_groups) > 2:
-                        correction_method = st.radio(
-                            "Multiple comparison correction:",
-                            ["Tukey HSD", "Bonferroni", "Holm"],
-                            help="Method to adjust p-values for multiple comparisons"
-                        )
-                
-                with test_col2:
-                    st.markdown("### Test Selection Guide")
-                    
-                    st.markdown("""
-                    **When to use each test:**
-                    
-                    - **t-test**: Compare means of two groups (requires normal distribution)
-                    - **ANOVA**: Compare means of 3+ groups (requires normal distribution)
-                    - **Mann-Whitney U**: Non-parametric alternative to t-test (no normality required)
-                    - **Kruskal-Wallis**: Non-parametric alternative to ANOVA (no normality required)
-                    
-                    **Automatic selection** will run normality tests and choose the appropriate test based on the results.
-                    """)
-                
-                # Run analysis
-                st.subheader("Statistical Analysis Results")
-                
-                # Prepare data for testing
-                test_data = []
-                group_names = []
-                
-                # Convert cycle selection to filter
-                if test_cycle == "Light Cycle":
-                    cycle_filter = True
-                elif test_cycle == "Dark Cycle":
-                    cycle_filter = False
-                else:  # 24-hour Average
-                    cycle_filter = None
-                
-                # Get data for each group
-                for group in test_groups:
-                    if cycle_filter is None:  # 24-hour average
-                        group_values = grouped_data[grouped_data['Group'] == group].groupby('Subject ID')['value'].mean().values
-                    else:
-                        group_values = grouped_data[(grouped_data['Group'] == group) & 
-                                                  (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean().values
-                    
-                    if len(group_values) > 0:
-                        test_data.append(group_values)
-                        group_names.append(group)
-                
-                # Check if we have enough data
-                if not all(len(data) > 0 for data in test_data):
-                    st.error("Insufficient data for some groups. Please check your data or select different groups.")
-                else:
-                    # Run normality tests if requested
-                    if run_normality:
-                        st.subheader("Normality Testing")
-                        
-                        # Create dataframe for normality results
-                        normality_results = []
-                        
-                        # Create normality plots
-                        norm_fig = go.Figure()
-                        
-                        for i, (group, data) in enumerate(zip(group_names, test_data)):
-                            # Skip if too few data points
-                            if len(data) < 3:
-                                normality_results.append({
-                                    'Group': group,
-                                    'Shapiro-Wilk W': 'N/A',
-                                    'p-value': 'N/A',
-                                    'Normal Distribution': 'Insufficient data'
-                                })
-                                continue
-                            
-                            # Run Shapiro-Wilk test
-                            shapiro_test = stats.shapiro(data)
-                            
-                            # Store results
-                            normality_results.append({
-                                'Group': group,
-                                'Shapiro-Wilk W': shapiro_test[0],
-                                'p-value': shapiro_test[1],
-                                'Normal Distribution': "Yes" if shapiro_test[1] >= 0.05 else "No"
-                            })
-                            
-                            # Create QQ plot data
-                            qq_data = stats.probplot(data, dist="norm")
-                            
-                            # Add to QQ plot
-                            norm_fig.add_trace(go.Scatter(
-                                x=qq_data[0][0],
-                                y=qq_data[0][1],
-                                mode='markers',
-                                name=f"{group} data",
-                                marker=dict(color=colors[i % len(colors)])
-                            ))
-                            
-                            # Add reference line
-                            line_x = qq_data[0][0]
-                            line_y = qq_data[0][0] * qq_data[1][0] + qq_data[1][1]
-                            
-                            norm_fig.add_trace(go.Scatter(
-                                x=line_x,
-                                y=line_y,
-                                mode='lines',
-                                name=f"{group} reference line",
-                                line=dict(color=colors[i % len(colors)], dash='dash'),
-                                showlegend=False
-                            ))
-                        
-                        # Update QQ plot layout
-                        norm_fig.update_layout(
-                            title="Quantile-Quantile Plot",
-                            xaxis_title="Theoretical Quantiles",
-                            yaxis_title="Sample Quantiles",
-                            height=400
-                        )
-                        
-                        # Display normality results
-                        df_normality = pd.DataFrame(normality_results)
-                        
-                        # Format p-values
-                        if not df_normality.empty and 'p-value' in df_normality.columns:
-                            df_normality['p-value'] = df_normality['p-value'].apply(
-                                lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else x
-                            )
-                        
-                        st.dataframe(df_normality)
-                        
-                        # Display QQ plot
-                        st.plotly_chart(norm_fig, use_container_width=True)
-                        
-                        # Interpret normality results
-                        all_normal = all(result.get('Normal Distribution') == "Yes" 
-                                        for result in normality_results 
-                                        if result.get('Normal Distribution') != 'Insufficient data')
-                        
-                        if all_normal:
-                            st.success("✅ All groups appear to be normally distributed. Parametric tests are appropriate.")
-                        else:
-                            st.warning("⚠️ Some groups do not follow a normal distribution. Non-parametric tests are recommended.")
-                    
-                    # Determine which test to use
-                    if test_type == "Automatic":
-                        # Choose based on normality and number of groups
-                        if run_normality:
-                            all_normal = all(result.get('Normal Distribution') == "Yes" 
-                                            for result in normality_results 
-                                            if result.get('Normal Distribution') != 'Insufficient data')
-                            
-                            if all_normal:
-                                if len(test_groups) == 2:
-                                    selected_test = "t-test"
-                                else:
-                                    selected_test = "ANOVA"
-                            else:
-                                if len(test_groups) == 2:
-                                    selected_test = "Mann-Whitney U"
-                                else:
-                                    selected_test = "Kruskal-Wallis"
-                        else:
-                            # Default to parametric if normality not tested
-                            if len(test_groups) == 2:
-                                selected_test = "t-test"
-                            else:
-                                selected_test = "ANOVA"
-                    else:
-                        selected_test = test_type
-                    
-                    # Run the selected test
-                    st.subheader(f"Results: {selected_test}")
-                    
-                    if selected_test == "t-test" and len(test_groups) == 2:
-                        # Run t-test
-                        t_stat, p_value = stats.ttest_ind(test_data[0], test_data[1], equal_var=False)
-                        
-                        # Display results
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("t-statistic", f"{t_stat:.4f}")
-                        with col2:
-                            st.metric("p-value", f"{p_value:.4f}", 
-                                    "Significant" if p_value < 0.05 else "Not significant")
-                        
-                        # Calculate Cohen's d
-                        # Pooled standard deviation
-                        n1, n2 = len(test_data[0]), len(test_data[1])
-                        mean1, mean2 = np.mean(test_data[0]), np.mean(test_data[1])
-                        sd1, sd2 = np.std(test_data[0], ddof=1), np.std(test_data[1], ddof=1)
-                        
-                        pooled_sd = np.sqrt(((n1 - 1) * sd1**2 + (n2 - 1) * sd2**2) / (n1 + n2 - 2))
-                        cohen_d = abs(mean1 - mean2) / pooled_sd
-                        
-                        # Interpret Cohen's d
-                        effect_interpretation = "Small" if cohen_d < 0.5 else "Medium" if cohen_d < 0.8 else "Large"
-                        
-                        # Display effect size
-                        st.metric("Cohen's d (Effect Size)", f"{cohen_d:.4f}", effect_interpretation)
-                        
-                        # Interpret result
-                        st.markdown(f"""
-                        **Interpretation:**
-                        
-                        The t-test comparing {group_names[0]} and {group_names[1]} resulted in a p-value of {p_value:.4f}, 
-                        which is {'statistically significant' if p_value < 0.05 else 'not statistically significant'} 
-                        at the α = 0.05 level.
-                        
-                        The effect size (Cohen's d = {cohen_d:.2f}) indicates a {effect_interpretation.lower()} effect.
-                        """)
-                    
-                    elif selected_test == "ANOVA" and len(test_groups) > 2:
-                        # Run one-way ANOVA
-                        f_stat, p_value = stats.f_oneway(*test_data)
-                        
-                        # Display results
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("F-statistic", f"{f_stat:.4f}")
-                        with col2:
-                            st.metric("p-value", f"{p_value:.4f}", 
-                                    "Significant" if p_value < 0.05 else "Not significant")
-                        
-                        # Calculate effect size (eta-squared)
-                        # Combine all data
-                        all_data = np.concatenate(test_data)
-                        # Create group labels
-                        group_labels = np.concatenate([[i] * len(data) for i, data in enumerate(test_data)])
-                        
-                        # Calculate grand mean
-                        grand_mean = np.mean(all_data)
-                        
-                        # Calculate SS_total
-                        ss_total = np.sum((all_data - grand_mean) ** 2)
-                        
-                        # Calculate SS_between
-                        ss_between = np.sum([len(data) * (np.mean(data) - grand_mean) ** 2 for data in test_data])
-                        
-                        # Calculate eta-squared
-                        eta_squared = ss_between / ss_total
-                        
-                        # Interpret eta-squared
-                        effect_interpretation = "Small" if eta_squared < 0.06 else "Medium" if eta_squared < 0.14 else "Large"
-                        
-                        # Display effect size
-                        st.metric("Eta-squared (Effect Size)", f"{eta_squared:.4f}", effect_interpretation)
-                        
-                        # Run post-hoc tests if ANOVA is significant
-                        if p_value < 0.05:
-                            st.subheader("Post-hoc Tests")
-                            
-                            # Use selected correction method
-                            if correction_method == "Tukey HSD":
-                                # Prepare data for Tukey's test
-                                all_data = np.concatenate(test_data)
-                                all_groups = np.concatenate([[group] * len(data) for group, data in zip(group_names, test_data)])
-                                
-                                # Perform Tukey's test
-                                res = pairwise_tukeyhsd(all_data, all_groups, alpha=0.05)
-                                
-                                # The results are available in a DataFrame
-                                tukey_df = pd.DataFrame(data=res._results_table.data[1:], 
-                                                        columns=res._results_table.data[0])
-
-                                # Create a cleaned dataframe for display
-                                tukey_results = pd.DataFrame({
-                                    'Group 1': tukey_df.iloc[:, 0],
-                                    'Group 2': tukey_df.iloc[:, 1],
-                                    'Mean Difference': tukey_df.iloc[:, 2].astype(float),
-                                    'p-value': tukey_df.iloc[:, 3].astype(float),
-                                    'Significant': tukey_df.iloc[:, 6] == 'True'
-                                })
-                                
-                                # Convert numeric columns
-                                tukey_results['Mean Difference'] = pd.to_numeric(tukey_results['Mean Difference'])
-                                tukey_results['p-value'] = pd.to_numeric(tukey_results['p-value'])
-                                
-                                # Format for display
-                                tukey_results['Mean Difference'] = tukey_results['Mean Difference'].round(2)
-                                tukey_results['p-value'] = tukey_results['p-value'].apply(lambda p: f"{p:.4f}")
-                                tukey_results['Significant'] = tukey_results['Significant'].apply(lambda s: "Yes *" if s else "No")
-                                
-                                # Display the results
-                                st.dataframe(tukey_results)
-                                
-                                # Add note about the correction
-                                st.info("* p-values adjusted for multiple comparisons using Tukey's Honestly Significant Difference method")
-                            
-                            elif correction_method == "Bonferroni":
-                                # Perform pairwise t-tests with Bonferroni correction
-                                comparisons = []
-                                
-                                # Total number of comparisons
-                                num_comparisons = len(test_groups) * (len(test_groups) - 1) // 2
-                                
-                                # Run all pairwise comparisons
-                                for i in range(len(test_groups)):
-                                    for j in range(i+1, len(test_groups)):
-                                        # Run t-test
-                                        t_stat, p_value = stats.ttest_ind(test_data[i], test_data[j], equal_var=False)
-                                        
-                                        # Calculate mean difference
-                                        mean_diff = np.mean(test_data[i]) - np.mean(test_data[j])
-                                        
-                                        # Adjust p-value with Bonferroni
-                                        adj_p_value = min(p_value * num_comparisons, 1.0)
-                                        
-                                        # Add to results
-                                        comparisons.append({
-                                            'Group 1': group_names[i],
-                                            'Group 2': group_names[j],
-                                            'Mean Difference': mean_diff,
-                                            'p-value': p_value,
-                                            'Adjusted p-value': adj_p_value,
-                                            'Significant': adj_p_value < 0.05
-                                        })
-                                
-                                # Create dataframe
-                                bonferroni_results = pd.DataFrame(comparisons)
-                                
-                                # Format for display
-                                bonferroni_results['Mean Difference'] = bonferroni_results['Mean Difference'].round(2)
-                                bonferroni_results['p-value'] = bonferroni_results['p-value'].apply(lambda p: f"{p:.4f}")
-                                bonferroni_results['Adjusted p-value'] = bonferroni_results['Adjusted p-value'].apply(lambda p: f"{p:.4f}")
-                                bonferroni_results['Significant'] = bonferroni_results['Significant'].apply(lambda s: "Yes *" if s else "No")
-                                
-                                # Display the results
-                                st.dataframe(bonferroni_results)
-                                
-                                # Add note about the correction
-                                st.info(f"* p-values adjusted for {num_comparisons} comparisons using Bonferroni correction")
-                            
-                            elif correction_method == "Holm":
-                                # Perform pairwise t-tests with Holm correction
-                                comparisons = []
-                                raw_p_values = []
-                                
-                                # Run all pairwise comparisons
-                                for i in range(len(test_groups)):
-                                    for j in range(i+1, len(test_groups)):
-                                        # Run t-test
-                                        t_stat, p_value = stats.ttest_ind(test_data[i], test_data[j], equal_var=False)
-                                        
-                                        # Calculate mean difference
-                                        mean_diff = np.mean(test_data[i]) - np.mean(test_data[j])
-                                        
-                                        # Add to results
-                                        comparisons.append({
-                                            'Group 1': group_names[i],
-                                            'Group 2': group_names[j],
-                                            'Mean Difference': mean_diff,
-                                            'p-value': p_value,
-                                            'index': len(comparisons)
-                                        })
-                                        
-                                        raw_p_values.append(p_value)
-                                
-                                # Apply Holm correction
-                                reject, adj_p_values, _, _ = stats.multitest.multipletests(
-                                    raw_p_values, method='holm')
-                                
-                                # Add adjusted p-values and significance
-                                for i, comp in enumerate(comparisons):
-                                    comp['Adjusted p-value'] = adj_p_values[i]
-                                    comp['Significant'] = reject[i]
-                                
-                                # Create dataframe
-                                holm_results = pd.DataFrame(comparisons)
-                                
-                                # Format for display
-                                holm_results['Mean Difference'] = holm_results['Mean Difference'].round(2)
-                                holm_results['p-value'] = holm_results['p-value'].apply(lambda p: f"{p:.4f}")
-                                holm_results['Adjusted p-value'] = holm_results['Adjusted p-value'].apply(lambda p: f"{p:.4f}")
-                                holm_results['Significant'] = holm_results['Significant'].apply(lambda s: "Yes *" if s else "No")
-                                
-                                # Drop index column
-                                holm_results = holm_results.drop(columns=['index'])
-                                
-                                # Display the results
-                                st.dataframe(holm_results)
-                                
-                                # Add note about the correction
-                                st.info("* p-values adjusted using Holm-Bonferroni sequential correction")
-                        else:
-                            st.info("ANOVA result is not statistically significant. Post-hoc tests are not necessary.")
-                    
-                    elif selected_test == "Mann-Whitney U" and len(test_groups) == 2:
-                        # Run Mann-Whitney U test
-                        u_stat, p_value = stats.mannwhitneyu(test_data[0], test_data[1])
-                        
-                        # Display results
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("U-statistic", f"{u_stat:.4f}")
-                        with col2:
-                            st.metric("p-value", f"{p_value:.4f}", 
-                                    "Significant" if p_value < 0.05 else "Not significant")
-                        
-                        # Calculate effect size (r)
-                        n1, n2 = len(test_data[0]), len(test_data[1])
-                        r = u_stat / (n1 * n2) - 0.5  # Normalized U statistic
-                        
-                        # Interpret effect size
-                        effect_interpretation = "Small" if abs(r) < 0.3 else "Medium" if abs(r) < 0.5 else "Large"
-                        
-                        # Display effect size
-                        st.metric("Effect Size (r)", f"{r:.4f}", effect_interpretation)
-                        
-                        # Interpret result
-                        st.markdown(f"""
-                        **Interpretation:**
-                        
-                        The Mann-Whitney U test comparing {group_names[0]} and {group_names[1]} resulted in a p-value of {p_value:.4f}, 
-                        which is {'statistically significant' if p_value < 0.05 else 'not statistically significant'} 
-                        at the α = 0.05 level.
-                        
-                        The effect size (r = {r:.2f}) indicates a {effect_interpretation.lower()} effect.
-                        """)
-                    
-                    elif selected_test == "Kruskal-Wallis" and len(test_groups) > 2:
-                        # Run Kruskal-Wallis test
-                        h_stat, p_value = stats.kruskal(*test_data)
-                        
-                        # Display results
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("H-statistic", f"{h_stat:.4f}")
-                        with col2:
-                            st.metric("p-value", f"{p_value:.4f}", 
-                                    "Significant" if p_value < 0.05 else "Not significant")
-                        
-                        # Calculate effect size (eta-squared)
-                        n_total = sum(len(data) for data in test_data)
-                        eta_squared = (h_stat - len(test_groups) + 1) / (n_total - len(test_groups))
-                        eta_squared = max(0, eta_squared)  # Ensure non-negative
-                        
-                        # Interpret effect size
-                        effect_interpretation = "Small" if eta_squared < 0.06 else "Medium" if eta_squared < 0.14 else "Large"
-                        
-                        # Display effect size
-                        st.metric("Eta-squared (Effect Size)", f"{eta_squared:.4f}", effect_interpretation)
-                        
-                        # Run post-hoc tests if Kruskal-Wallis is significant
-                        if p_value < 0.05:
-                            st.subheader("Post-hoc Tests")
-                            
-                            # Perform Dunn's test with chosen correction
-                            from scikit_posthocs import posthoc_dunn
-                            
-                            # Prepare data
-                            all_data = np.concatenate(test_data)
-                            all_groups = np.concatenate([[i] * len(data) for i, data in enumerate(test_data)])
-                            
-                            # Create a DataFrame for Dunn's test
-                            dunn_df = pd.DataFrame({'value': all_data, 'group': all_groups})
-                            
-                            # Perform Dunn's test
-                            if correction_method == "Bonferroni":
-                                dunn_method = 'bonferroni'
-                            elif correction_method == "Holm":
-                                dunn_method = 'holm'
-                            else:
-                                dunn_method = 'bonferroni'  # Default to Bonferroni if Tukey selected
-                            
-                            dunn_result = posthoc_dunn(dunn_df, val_col='value', group_col='group', p_adjust=dunn_method)
-                            
-                            # Format results for display
-                            dunn_comparisons = []
-                            
-                            for i in range(len(test_groups)):
-                                for j in range(i+1, len(test_groups)):
-                                    dunn_comparisons.append({
-                                        'Group 1': group_names[i],
-                                        'Group 2': group_names[j],
-                                        'p-value': dunn_result.iloc[i, j],
-                                        'Significant': dunn_result.iloc[i, j] < 0.05
-                                    })
-                            
-                            # Create dataframe
-                            dunn_results = pd.DataFrame(dunn_comparisons)
-                            
-                            # Format for display
-                            dunn_results['p-value'] = dunn_results['p-value'].apply(lambda p: f"{p:.4f}")
-                            dunn_results['Significant'] = dunn_results['Significant'].apply(lambda s: "Yes *" if s else "No")
-                            
-                            # Display the results
-                            st.dataframe(dunn_results)
-                            
-                            # Add note about the correction
-                            st.info(f"* p-values adjusted using Dunn's test with {correction_method} correction")
-                        else:
-                            st.info("Kruskal-Wallis result is not statistically significant. Post-hoc tests are not necessary.")
         
-        with stat_tab4:
-            st.subheader("Statistical Summary Report")
-            
-            # Generate timestamp
-            import datetime
-            report_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Create summary report without indentation
-            report_md = [
-                "# CLAMSer Statistical Analysis Report",
-                "",
-                f"**Generated:** {report_time}",
-                "",
-                "## Analysis Parameters",
-                "",
-                f"- **Parameter:** {parameter} ({parameter_descriptions.get(parameter, '')})",
-                f"- **Time Window:** {time_window}",
-                f"- **Total Records:** {len(raw_data) if raw_data is not None else 'N/A'}",
-                f"- **Groups Analyzed:** {', '.join(group_assignments['Group'].unique()) if 'group_assignments' in st.session_state else 'None'}",
-                "",
-                "## Group Statistics",
-                "",
-                "| Group | N | Mean | SD | SEM | 95% CI |",
-                "|-------|---|------|----|----|--------|"
-            ]
+        # Export Section with better explanations
+        st.markdown("---")
+        st.subheader("Export Results")
 
-            # Add each group's stats as a separate row
-            if 'group_stats' in locals() and not group_stats.empty:
-                for _, row in group_stats.iterrows():
-                    ci_lower = row.get('CI_95_Lower', 0)
-                    ci_upper = row.get('CI_95_Upper', 0)
-                    report_md.append(f"| {row['Group']} | {row['N']} | {row['Mean']:.2f} | {row['SD']:.2f} | {row['SEM']:.2f} | {ci_lower:.2f} - {ci_upper:.2f} |")
+        st.markdown("""
+        Download your analysis results for use in other programs like Excel, GraphPad Prism, or R.
+        These CSV files can be directly imported into most analysis software.
+        """)
 
-            # Add test results section
-            report_md.extend([
-                "",
-                "## Statistical Test Results"
-            ])
+        col1, col2 = st.columns(2)
 
-            # Check if we have test results to display
-            if 'selected_test' in locals():
-                report_md.append("")
-                if selected_test == "t-test" and 't_stat' in locals():
-                    report_md.extend([
-                        f"**Independent Samples t-test:**",
-                        f"- Comparison: {group_names[0]} vs {group_names[1]}",
-                        f"- t-statistic: {t_stat:.4f}",
-                        f"- p-value: {p_value:.4f}",
-                        f"- Significance: {'Significant' if p_value < 0.05 else 'Not significant'}"
-                    ])
-                    if 'cohen_d' in locals():
-                        report_md.append(f"- Effect size (Cohen's d): {cohen_d:.4f} ({effect_interpretation})")
+        with col1:
+            # Statistics export
+            if not group_stats.empty:
+                csv_stats = group_stats.to_csv().encode('utf-8')
+                st.download_button(
+                    label="📥 Download Statistics (CSV)",
+                    data=csv_stats,
+                    file_name=f"{parameter}_statistics.csv",
+                    mime="text/csv",
+                    help="Download complete statistical results for further analysis"
+                )
                 
-                elif selected_test == "ANOVA" and 'f_stat' in locals():
-                    report_md.extend([
-                        f"**One-way ANOVA:**",
-                        f"- Groups: {', '.join(group_names)}",
-                        f"- F-statistic: {f_stat:.4f}",
-                        f"- p-value: {p_value:.4f}",
-                        f"- Significance: {'Significant' if p_value < 0.05 else 'Not significant'}"
-                    ])
-                    if 'eta_squared' in locals():
-                        report_md.append(f"- Effect size (Eta-squared): {eta_squared:.4f} ({effect_interpretation})")
+                st.markdown("""
+                **The Statistics CSV contains:**
+                - Group names
+                - Number of animals (N)
+                - Mean values for each group
+                - Standard deviation (SD)
+                - Standard error of mean (SEM)
+                - 95% Confidence intervals
+                
+                For creating your own custom graphs 
+                """)
+
+        with col2:
+            # Time pattern export
+            if 'hourly_df' in locals() and not hourly_df.empty:
+                csv_hourly = hourly_df.to_csv().encode('utf-8')
+                st.download_button(
+                    label="📥 Download 24h Pattern Data (CSV)",
+                    data=csv_hourly,
+                    file_name=f"{parameter}_24h_pattern.csv",
+                    mime="text/csv",
+                    help="Download hourly averages for each group"
+                )
+                
+                st.markdown("""
+                **The 24h Pattern CSV contains:**
+                - Hour of day (0-23)
+                - Mean value for each hour
+                - Standard error (SEM) for each hour
+                - Group identifier
+                
+                For creating custom time-course graphs or performing additional temporal analysis.
+                """)
+        
+        # Sample Calculation Section
+        st.markdown("---")
+        st.subheader("📝 Understanding the Calculations")
+
+        with st.expander("See how means and statistics are calculated from raw data"):
+            st.markdown("### How Group Statistics Are Calculated")
+            
+            # Pick a sample group to demonstrate
+            sample_group = selected_groups[0]
+            sample_cages = group_assignments[group_assignments['Group'] == sample_group]['normalized_cage_id'].unique()
+            
+            st.markdown(f"**Example calculation for {sample_group}:**")
+            
+            # Show raw data sample
+            st.markdown("#### 1. Start with raw data measurements")
+            raw_sample = grouped_data[(grouped_data['Group'] == sample_group)].head(10)
+            st.dataframe(raw_sample[['cage', 'timestamp', 'value', 'is_light']].head())
+            
+            # Show individual cage means
+            st.markdown("#### 2. Calculate mean for each animal")
+            
+            if cycle_filter is not None:  # Light or Dark cycle
+                cages_data = grouped_data[(grouped_data['Group'] == sample_group) & 
+                                        (grouped_data['is_light'] == cycle_filter)]
+            else:  # 24-hour Average
+                cages_data = grouped_data[grouped_data['Group'] == sample_group]
+            
+            cage_means = []
+            all_values = []
+            
+            for cage in sample_cages:
+                if len(cages_data[cages_data['normalized_cage_id'] == cage]) > 0:
+                    cage_mean = cages_data[cages_data['normalized_cage_id'] == cage]['value'].mean()
+                    subject_id = group_assignments[group_assignments['normalized_cage_id'] == cage]['Subject ID'].iloc[0]
+                    cage_values = cages_data[cages_data['normalized_cage_id'] == cage]['value'].tolist()
+                    all_values.extend(cage_values)
                     
-                    # Add Tukey's HSD results if available
-                    if p_value < 0.05 and 'tukey_results' in locals() and not tukey_results.empty:
-                        report_md.extend([
-                            "",
-                            "**Post-hoc Analysis (Tukey's HSD):**",
-                            "",
-                            "| Group 1 | Group 2 | Mean Difference | p-value | Significant |",
-                            "|---------|---------|----------------|---------|-------------|"
-                        ])
-                        for _, row in tukey_results.iterrows():
-                            mean_diff = row.get('Mean Difference', 0)
-                            p_val = row.get('p-value', '1.0000')
-                            sig = row.get('Significant', 'No')
-                            report_md.append(f"| {row['Group 1']} | {row['Group 2']} | {mean_diff:.2f} | {p_val} | {sig} |")
-                
-                elif selected_test == "Mann-Whitney U" and 'u_stat' in locals():
-                    report_md.extend([
-                        f"**Mann-Whitney U Test:**",
-                        f"- Comparison: {group_names[0]} vs {group_names[1]}",
-                        f"- U-statistic: {u_stat:.4f}",
-                        f"- p-value: {p_value:.4f}",
-                        f"- Significance: {'Significant' if p_value < 0.05 else 'Not significant'}"
-                    ])
-                    if 'r' in locals():
-                        report_md.append(f"- Effect size (r): {r:.4f} ({effect_interpretation})")
-                
-                elif selected_test == "Kruskal-Wallis" and 'h_stat' in locals():
-                    report_md.extend([
-                        f"**Kruskal-Wallis Test:**",
-                        f"- Groups: {', '.join(group_names)}",
-                        f"- H-statistic: {h_stat:.4f}",
-                        f"- p-value: {p_value:.4f}",
-                        f"- Significance: {'Significant' if p_value < 0.05 else 'Not significant'}"
-                    ])
-                    if 'eta_squared' in locals():
-                        report_md.append(f"- Effect size (Eta-squared): {eta_squared:.4f} ({effect_interpretation})")
-
-            # Add interpretation section
-            report_md.extend([
-                "",
-                "## Interpretation",
-                ""
-            ])
+                    cage_means.append({
+                        'Cage': f"CAGE {cage.split('101')[1] if '101' in cage else cage}",
+                        'Subject ID': subject_id, 
+                        'Mean Value': round(cage_mean, 2),
+                        'Number of Measurements': len(cage_values)
+                    })
             
-            # Add basic interpretation if test results are available
-            if 'selected_test' in locals() and 'p_value' in locals():
+            st.dataframe(pd.DataFrame(cage_means))
+            
+            # Show group mean calculation
+            st.markdown("#### 3. Calculate overall group statistics")
+            
+            cage_means_values = [x['Mean Value'] for x in cage_means]
+            group_mean = np.mean(cage_means_values)
+            group_sd = np.std(cage_means_values, ddof=1)  # Using n-1 for sample standard deviation
+            group_sem = group_sd / np.sqrt(len(cage_means_values))
+            
+            st.markdown(f"**Group Mean** = ({' + '.join([str(x) for x in cage_means_values])}) ÷ {len(cage_means_values)} = **{group_mean:.2f}**")
+            
+            st.markdown(f"**Group Standard Deviation (SD)**")
+            st.markdown("""
+            SD measures how spread out the individual animal means are from the group mean.
+            
+            1. Calculate squared differences from the group mean
+            2. Average those squared differences
+            3. Take the square root
+            """)
+            
+            squared_diffs = [(x - group_mean)**2 for x in cage_means_values]
+            
+            st.markdown(f"Squared differences: {[round(x, 2) for x in squared_diffs]}")
+            st.markdown(f"Average squared difference: {sum(squared_diffs) / (len(squared_diffs) - 1):.2f}")
+            st.markdown(f"Standard Deviation = √{sum(squared_diffs) / (len(squared_diffs) - 1):.2f} = **{group_sd:.2f}**")
+            
+            st.markdown(f"**Standard Error of Mean (SEM)**")
+            st.markdown("""
+            SEM tells you how precise your estimate of the mean is.
+            
+            SEM = SD ÷ √N  (where N is the number of animals)
+            """)
+            
+            st.markdown(f"SEM = {group_sd:.2f} ÷ √{len(cage_means_values)} = {group_sd:.2f} ÷ {np.sqrt(len(cage_means_values)):.2f} = **{group_sem:.2f}**")
+            
+            # Hourly calculation explanation
+            st.markdown("### How Hourly Averages Are Calculated")
+            
+            st.markdown("""
+            For the 24-hour pattern graph:
+            
+            1. Group all measurements by hour of day (0-23)
+            2. Calculate the average value for each hour
+            3. Plot these hourly averages to show the daily pattern
+            """)
+            
+            # Show sample for one hour
+            sample_hour = 12  # Noon
+            hour_data = grouped_data[(grouped_data['Group'] == sample_group) & (grouped_data['hour'] == sample_hour)]
+            
+            if len(hour_data) > 0:
+                st.markdown(f"**Example: Hour {sample_hour} (12 PM) for {sample_group}**")
+                st.dataframe(hour_data[['cage', 'timestamp', 'value']].head())
+                hour_mean = hour_data['value'].mean()
+                hour_sem = hour_data['value'].sem()
+                
+                st.markdown(f"Hour {sample_hour} average = {hour_mean:.2f}")
+                st.markdown(f"Hour {sample_hour} SEM = {hour_sem:.2f}")
+                
+                st.markdown("""
+                These hourly averages are plotted on the 24-hour pattern graph, with SEM shown as shaded regions.
+                The graph lets you see how values change throughout the day and compare patterns between groups.
+                """)
+        
+        # Optional interpretation section (collapsible)
+        with st.expander("📋 Optional: Results Interpretation", expanded=False):
+            st.markdown("### Statistical Interpretation")
+            
+            if p_value is not None:
                 if p_value < 0.05:
-                    if selected_test in ["t-test", "Mann-Whitney U"] and len(group_names) == 2:
-                        interp = f"The analysis revealed a statistically significant difference between {group_names[0]} and {group_names[1]} "
-                        interp += f"(p = {p_value:.4f})."
-                        report_md.append(interp)
-                        
-                        # Add effect size interpretation if available
-                        if 'cohen_d' in locals() or 'r' in locals():
-                            effect = cohen_d if 'cohen_d' in locals() else r
-                            effect_text = f"The effect size indicates a {effect_interpretation.lower()} effect ({effect:.2f}), "
-                            if effect_interpretation == "Small":
-                                effect_text += "suggesting the difference, while statistically significant, may not be biologically meaningful."
-                            elif effect_interpretation == "Medium":
-                                effect_text += "suggesting a moderate biological difference between groups."
-                            else:  # Large
-                                effect_text += "suggesting a substantial biological difference between groups."
-                            report_md.append(effect_text)
+                    st.markdown(f"""
+                    **Statistical Result**: Your groups show a **statistically significant difference** (p={p_value:.4f}).
                     
-                    elif selected_test in ["ANOVA", "Kruskal-Wallis"] and len(group_names) > 2:
-                        interp = f"The analysis revealed statistically significant differences among the groups "
-                        interp += f"(p = {p_value:.4f})."
-                        report_md.append(interp)
+                    This suggests that the observed difference between groups is unlikely to be due to random chance alone.
+                    """)
+                    
+                    if test_name == "t-test" and 'cohen_d' in locals():
+                        st.markdown(f"""
+                        **Effect Size**: The difference represents a **{effect_interpretation.lower()} effect** (Cohen's d = {cohen_d:.2f}).
                         
-                        # Add post-hoc interpretation if available
-                        if 'tukey_results' in locals() and not tukey_results.empty:
-                            sig_pairs = tukey_results[tukey_results['Significant'] == "Yes *"]
-                            if not sig_pairs.empty:
-                                report_md.append("")
-                                report_md.append("Post-hoc analysis revealed the following significant pairwise differences:")
-                                report_md.append("")
-                                for _, row in sig_pairs.iterrows():
-                                    report_md.append(f"- {row['Group 1']} vs {row['Group 2']}")
-                            else:
-                                report_md.append("")
-                                report_md.append("However, post-hoc analysis did not identify specific significant pairwise differences after correction for multiple comparisons.")
+                        {'This suggests the difference, while statistically significant, may not be biologically meaningful.' if effect_interpretation == 'Small' else 
+                        'This suggests a moderate biological difference between groups.' if effect_interpretation == 'Medium' else
+                        'This suggests a substantial biological difference between groups.'}
+                        
+                        **Practical Significance**: Group {group1 if mean1 > mean2 else group2} showed a {percent_diff:.1f}% 
+                        higher {parameter} value than Group {group2 if mean1 > mean2 else group1}.
+                        """)
                 else:
-                    interp = f"The analysis did not reveal statistically significant differences "
+                    st.markdown(f"""
+                    **Statistical Result**: Your groups do not show a statistically significant difference (p={p_value:.4f}).
                     
-                    if selected_test in ["t-test", "Mann-Whitney U"] and len(group_names) == 2:
-                        interp += f"between {group_names[0]} and {group_names[1]} "
-                    else:
-                        interp += f"among the groups "
+                    This suggests that any observed differences between groups may be due to random variation rather than a true effect.
                     
-                    interp += f"(p = {p_value:.4f})."
-                    report_md.append(interp)
-            
-            # Join the list into a single string with proper line breaks
-            report_md_str = "\n".join(report_md)
-            
-            # Display the report
-            st.markdown(report_md_str)
-            
-            # Add download buttons
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Convert report markdown to HTML for the HTML download
-                import markdown
-                report_html = markdown.markdown(report_md_str)
-                report_doc = f"""<!DOCTYPE html>
-        <html>
-        <head>
-            <title>CLAMSer Statistical Report</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
-                h1 {{ color: #2c3e50; }}
-                h2 {{ color: #3498db; margin-top: 30px; }}
-                table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                th {{ background-color: #f2f2f2; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-            </style>
-        </head>
-        <body>
-            {report_html}
-        </body>
-        </html>"""
-                st.download_button(
-                    label="📥 Download as HTML",
-                    data=report_doc,
-                    file_name=f"CLAMSer_{parameter}_Stats_Report.html",
-                    mime="text/html"
-                )
-            
-            with col2:
-                st.download_button(
-                    label="📥 Download as Markdown",
-                    data=report_md_str,
-                    file_name=f"CLAMSer_{parameter}_Stats_Report.md",
-                    mime="text/markdown"
-                )
+                    **Possible reasons for non-significance:**
+                    - Small sample size (low statistical power)
+                    - High variability within groups
+                    - Truly no difference between groups
+                    - Analyzing the wrong cycle (try looking at Dark Cycle instead of Light Cycle)
+                    """)
+            else:
+                st.markdown("""
+                **Not enough data**: Unable to perform statistical test. Please ensure you have sufficient data for each group.
+                """)
 
 def extract_cage_info(file):
     """Extract cage information from file header"""
@@ -2616,23 +2192,27 @@ parameter_descriptions = {
 }
 
 # Create tabs for organization
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 IN DEV (Statistical Analysis", "🧪 IN DEV Verification"])
+tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", "🧪 IN DEV Verification"])
 
 with tab1:
-    # Add introduction section
-    st.markdown("""
-    ## Welcome to CLAMSer 🧬
+    # Only show welcome message if no file is uploaded
+    if uploaded_file is None:
+        st.markdown("""
+        ## Welcome to CLAMSer 🧬
 
-    This tool analyzes metabolic data from Comprehensive Lab Animal Monitoring System (CLAMS) files.
+        This tool analyzes metabolic data from Comprehensive Lab Animal Monitoring System (CLAMS) files.
 
-    **Getting Started:**
-    1. Upload your CLAMS data file using the sidebar
-    2. Select the parameter type (VO2, VCO2, RER, etc.)
-    3. Choose your preferred time window
-    4. Review the analysis below
+        **Getting Started:**
+        1. Upload your CLAMS data file using the sidebar
+        2. Select the parameter type (VO2, VCO2, RER, etc.)
+        3. Choose your preferred time window
+        4. Review the analysis below
 
-    The Overview tab provides summary metrics, 24-hour patterns, and detailed data tables for your CLAMS data.
-    """)
+        The Overview tab provides summary metrics, 24-hour patterns, and detailed data tables for your CLAMS data.
+        """)
+    else:
+        # When file is uploaded, just show the header followed by parameter guide
+        st.header("📊 Overview")
 
     # Add Parameter Guide expander
     with st.expander("📚 CLAMS Parameter Guide - Learn about each measurement", expanded=False):
@@ -2735,8 +2315,7 @@ with tab1:
             Food intake should be considered alongside metabolic parameters for a complete energy balance assessment.
             """)
 
-    # Add horizontal rule for visual separation
-    st.markdown("---")
+    
     
 if uploaded_file is not None:
     # First verify file type
@@ -2756,99 +2335,36 @@ if uploaded_file is not None:
             # Tab 1: Overview
             with tab1:
                 if results is not None:
-                    # 1. METRICS - Display parameter-specific metrics at the top
-                    if parameter in ["XTOT", "XAMB"]:
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("Average Light Activity", 
-                                f"{results['True (Average Activity)'].mean():.1f} {PARAMETER_UNITS[parameter]}")
-                        with col2:
-                            st.metric("Average Dark Activity", 
-                                f"{results['False (Average Activity)'].mean():.1f} {PARAMETER_UNITS[parameter]}")
-                        with col3:
-                            st.metric("Peak Activity", 
-                                f"{max(results['True (Peak Activity)'].max(), results['False (Peak Activity)'].max()):.0f} {PARAMETER_UNITS[parameter]}")
-                        with col4:
-                            st.metric("Total Activity", 
-                                f"{(results['True (Total Counts)'] + results['False (Total Counts)']).sum():.0f} {PARAMETER_UNITS[parameter]}")
-                    
-                    elif parameter == "RER":
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Average Light RER", f"{results['Light Average'].mean():.3f}")
-                        with col2:
-                            st.metric("Average Dark RER", f"{results['Dark Average'].mean():.3f}")
-                        with col3:
-                            st.metric("Total Records", len(raw_data))
-                    
-                    elif parameter == "FEED":
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Average Light Rate", 
-                                    f"{results['Average Rate (Light)'].mean():.4f} {PARAMETER_UNITS[parameter]}")
-                        with col2:
-                            st.metric("Average Dark Rate", 
-                                    f"{results['Average Rate (Dark)'].mean():.4f} {PARAMETER_UNITS[parameter]}")
-                        with col3:
-                            st.metric("Total Feed", 
-                                    f"{(results['Total Intake (Light)'] + results['Total Intake (Dark)']).sum():.4f} {PARAMETER_UNITS[parameter]}")
-                    
-                    else:  # VO2, VCO2, HEAT
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric(f"Average Light {parameter}", 
-                                    f"{results['Light Average'].mean():.2f} {PARAMETER_UNITS[parameter]}")
-                        with col2:
-                            st.metric(f"Average Dark {parameter}", 
-                                    f"{results['Dark Average'].mean():.2f} {PARAMETER_UNITS[parameter]}")
-                        with col3:
-                            st.metric("Total Records", len(raw_data))
-                            
-                    
-                    # Create a summary insights section
-                    st.subheader("📊 Key Insights")
-
-                    # Get day/night ratio based on parameter type
-                    day_night_ratio = None
-                    if parameter in ["VO2", "VCO2", "HEAT", "RER"]:
-                        day_night_ratio = results['Light Average'].mean() / results['Dark Average'].mean()
-                    elif parameter in ["XTOT", "XAMB"]:
-                        day_night_ratio = results['True (Average Activity)'].mean() / results['False (Average Activity)'].mean() 
-                    elif parameter == "FEED":
-                        day_night_ratio = results['Average Rate (Light)'].mean() / results['Average Rate (Dark)'].mean()
-
-                    # Display day/night insight if ratio could be calculated
-                    if day_night_ratio is not None:
-                        direction = "higher" if day_night_ratio > 1 else "lower"
-                        percent_diff = abs(1 - day_night_ratio) * 100
-                        
-                        # For most parameters, lower during light is normal for nocturnal animals
-                        # But for FEED, higher during dark is normal
-                        normal_pattern = day_night_ratio < 1
-                        if parameter == "FEED":
-                            normal_pattern = day_night_ratio < 1  # Food intake is normally higher during dark for nocturnal animals
-                        
-                        st.info(f"**Day/Night Pattern**: {parameter} is {percent_diff:.1f}% {direction} during light cycle compared to dark cycle, " + 
-                                ("suggesting normal nocturnal activity. I.E. it is a good thing :)" if normal_pattern else "which may indicate altered circadian rhythm."))
 
                     # Add a visual separator
                     st.markdown("---")
 
-                    # Group Assignment Section - moved higher in workflow
+                    # Group Assignment Section - now collapsible
                     st.header("👥 Group Assignment")
-                    st.info("Assign your animals to experimental groups before proceeding with visualization.")
 
-                    cage_info = extract_cage_info(uploaded_file)
-                    if cage_info:
-                        cage_df = pd.DataFrame([
-                            {"Cage": f"CAGE {k}", "Subject ID": v} 
-                            for k, v in cage_info.items()
-                        ])
-                        
-                        # Display cage information and allow group assignment
-                        group_assignments = assign_groups(cage_df, key_prefix="overview")
-                        if group_assignments is not None:
-                            st.session_state['group_assignments'] = group_assignments
+                    # Determine if groups are already assigned
+                    has_groups = 'group_assignments' in st.session_state and not st.session_state.get('group_assignments', pd.DataFrame()).empty
+
+                    # Create expander with smart default state (expanded if no groups assigned)
+                    with st.expander("Assign Animals to Groups", expanded=not has_groups):
+                        st.info("Assign your animals to experimental groups before proceeding with visualization.")
+
+                        cage_info = extract_cage_info(uploaded_file)
+                        if cage_info:
+                            cage_df = pd.DataFrame([
+                                {"Cage": f"CAGE {k}", "Subject ID": v} 
+                                for k, v in cage_info.items()
+                            ])
+                            
+                            # Display cage information and allow group assignment
+                            group_assignments = assign_groups(cage_df, key_prefix="overview")
+                            if group_assignments is not None:
+                                st.session_state['group_assignments'] = group_assignments
+                                
+                        # Add indicator of current group assignments
+                        if has_groups:
+                            existing_groups = st.session_state['group_assignments']['Group'].unique()
+                            st.success(f"✅ You have assigned animals to {len(existing_groups)} groups: {', '.join(existing_groups)}")
 
                     # Add another separator before visualizations
                     st.markdown("---")
@@ -2984,9 +2500,86 @@ if uploaded_file is not None:
                                     st.success(f"📊 Displaying data for {len(selected_subjects)} selected animals")
                                 else:
                                     st.warning("⚠️ Please select at least one animal to display")
+                    
+                    
+                    # 1. METRICS - Display parameter-specific metrics at the top with improved layout
+                    st.markdown("### Key Metrics")
 
-                    # Add a line for visual separation before the plot
-                    st.markdown("---")
+                    # Create a container for better styling
+                    metrics_container = st.container()
+                    with metrics_container:
+                        if parameter in ["XTOT", "XAMB"]:
+                            # Use equal width columns with proper spacing
+                            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+                            with col1:
+                                st.metric("Average Light Activity", 
+                                    f"{results['True (Average Activity)'].mean():.1f} {PARAMETER_UNITS[parameter]}")
+                            with col2:
+                                st.metric("Average Dark Activity", 
+                                    f"{results['False (Average Activity)'].mean():.1f} {PARAMETER_UNITS[parameter]}")
+                            with col3:
+                                st.metric("Peak Activity", 
+                                    f"{max(results['True (Peak Activity)'].max(), results['False (Peak Activity)'].max()):.0f} {PARAMETER_UNITS[parameter]}")
+                            with col4:
+                                st.metric("Total Activity", 
+                                    f"{(results['True (Total Counts)'] + results['False (Total Counts)']).sum():.0f} {PARAMETER_UNITS[parameter]}")
+
+                        elif parameter == "RER":
+                            # Equal column widths for balanced appearance
+                            col1, col2, col3 = st.columns([1, 1, 1])
+                            with col1:
+                                st.metric("Average Light RER", f"{results['Light Average'].mean():.3f}")
+                            with col2:
+                                st.metric("Average Dark RER", f"{results['Dark Average'].mean():.3f}")
+                            with col3:
+                                st.metric("Total Records", f"{len(raw_data):,}")
+
+                        elif parameter == "FEED":
+                            col1, col2, col3 = st.columns([1, 1, 1])
+                            with col1:
+                                st.metric("Average Light Rate", 
+                                        f"{results['Average Rate (Light)'].mean():.4f} {PARAMETER_UNITS[parameter]}")
+                            with col2:
+                                st.metric("Average Dark Rate", 
+                                        f"{results['Average Rate (Dark)'].mean():.4f} {PARAMETER_UNITS[parameter]}")
+                            with col3:
+                                st.metric("Total Feed", 
+                                        f"{(results['Total Intake (Light)'] + results['Total Intake (Dark)']).sum():.4f} {PARAMETER_UNITS[parameter]}")
+
+                        else:  # VO2, VCO2, HEAT
+                            col1, col2, col3 = st.columns([1, 1, 1])
+                            with col1:
+                                st.metric(f"Average Light {parameter}", 
+                                        f"{results['Light Average'].mean():.2f} {PARAMETER_UNITS[parameter]}")
+                            with col2:
+                                st.metric(f"Average Dark {parameter}", 
+                                        f"{results['Dark Average'].mean():.2f} {PARAMETER_UNITS[parameter]}")
+                            with col3:
+                                st.metric("Total Records", f"{len(raw_data):,}")
+
+                    # Get day/night ratio based on parameter type
+                    day_night_ratio = None
+                    if parameter in ["VO2", "VCO2", "HEAT", "RER"]:
+                        day_night_ratio = results['Light Average'].mean() / results['Dark Average'].mean()
+                    elif parameter in ["XTOT", "XAMB"]:
+                        day_night_ratio = results['True (Average Activity)'].mean() / results['False (Average Activity)'].mean() 
+                    elif parameter == "FEED":
+                        day_night_ratio = results['Average Rate (Light)'].mean() / results['Average Rate (Dark)'].mean()
+
+                    # Display day/night insight if ratio could be calculated
+                    if day_night_ratio is not None:
+                        direction = "higher" if day_night_ratio > 1 else "lower"
+                        percent_diff = abs(1 - day_night_ratio) * 100
+                        
+                        # For most parameters, lower during light is normal for nocturnal animals
+                        # But for FEED, higher during dark is normal
+                        normal_pattern = day_night_ratio < 1
+                        if parameter == "FEED":
+                            normal_pattern = day_night_ratio < 1  # Food intake is normally higher during dark for nocturnal animals
+                        
+                        st.info(f"**Day/Night Pattern**: {parameter} is {percent_diff:.1f}% {direction} during light cycle compared to dark cycle, " + 
+                                ("suggesting normal nocturnal activity. I.E. it is a good thing :)" if normal_pattern else "which may indicate altered circadian rhythm."))
+        
                     # Add a datetime column that combines date and hour for proper timeline
                     timeline_data['datetime'] = pd.to_datetime(timeline_data['timestamp'].dt.strftime('%Y-%m-%d %H:00:00'))
 
@@ -3160,7 +2753,7 @@ if uploaded_file is not None:
                             # Only show grouped data if groups are actually assigned to subjects
                             if not results_with_groups['Group'].isna().all():
                                 st.markdown("#### Group Averages")
-                                group_means = results_with_groups.groupby('Group').mean()
+                                group_means = results_with_groups.groupby('Group').mean(numeric_only=True)
                                 st.dataframe(style_dataframe(group_means))
                                 
                                 st.markdown("#### Individual Animal Data")
@@ -3314,7 +2907,7 @@ if uploaded_file is not None:
                         if 'group_assignments' in st.session_state and not st.session_state['group_assignments'].empty:
                             # Create group summary if it exists
                             if 'results_with_groups' in locals() and not results_with_groups.empty:
-                                group_summary = results_with_groups.groupby('Group').mean()
+                                group_summary = results_with_groups.groupby('Group').mean(numeric_only=True)
                                 csv_group_summary = group_summary.to_csv().encode('utf-8')
                                 st.download_button(
                                     label=f"📥 Download Group Averages",
@@ -3347,10 +2940,40 @@ if uploaded_file is not None:
                                 help=f"Download first 1000 rows of raw data"
                             )
 
+                    # Add explanations AFTER both columns - outside the column blocks
+                    st.markdown("---")  # Add separator for clarity
+                    with st.expander("Which data file should I download?", expanded=False):
+                        st.markdown("""
+                        ### Understanding Export Options
+                        
+                        Choose the right data format for your needs:
+                        
+                        **Summary Data**
+                        - Contains light/dark cycle averages for each animal
+                        - Includes metrics like Dark Average, Light Average, Total Average
+                        - Best for: Overall results and animal-to-animal comparisons
+                        
+                        **Group Averages**
+                        - Contains averaged values for each experimental group
+                        - Useful for statistical comparisons between treatment groups
+                        - Best for: Preparing graphs for publications and presentations
+                        
+                        **Hourly Data**
+                        - Contains hour-by-hour averages (0-23) for each animal
+                        - Shows circadian patterns and time-of-day effects
+                        - Best for: Time series analysis and circadian rhythm assessment
+                        
+                        **Raw Data Sample**
+                        - First 1000 rows of unprocessed measurements
+                        - Includes exact timestamps and individual readings
+                        - Best for: Verification, custom analysis, or processing in other software
+                        """)
+
+    
             # Tab 2: Statistical Analysis
             with tab2:
                 if uploaded_file is not None and raw_data is not None and results is not None:
-                    enhanced_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window)
+                    simplified_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window)
                 else:
                     st.warning("Please upload data in the Overview tab first")
                     
