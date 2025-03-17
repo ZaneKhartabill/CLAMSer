@@ -2192,7 +2192,7 @@ parameter_descriptions = {
 }
 
 # Create tabs for organization
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", "🧪 IN DEV Verification"])
+tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", "🧪 Verification"])
 
 with tab1:
     # Only show welcome message if no file is uploaded
