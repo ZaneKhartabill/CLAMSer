@@ -281,10 +281,65 @@ with st.sidebar:
     # Move time window selection to sidebar
     time_window = st.radio(
         "Time Window",
-        ["Last 24 Hours", "Last 48 Hours", "Last 72 Hours"],
+        ["Last 24 Hours", "Last 48 Hours", "Last 72 Hours", "Last 7 Days", "Last 14 Days", "Custom Range", "Entire Dataset"],
         help="Choose analysis duration",
         key="time_window_radio"  
     )
+    
+    # Add custom range input if selected
+    if time_window == "Custom Range":
+        custom_days = st.number_input(
+            "Number of days to analyze",
+            min_value=1,
+            max_value=30,
+            value=5,
+            step=1,
+            help="Enter the number of days to include in analysis (1-30)",
+            key="custom_days_input"
+        )
+    
+    # Add note for Entire Dataset
+    if time_window == "Entire Dataset":
+        st.info("Entire Dataset can be used to inform your specific acclimation period, which you can then analyze using Custom Range.")
+        
+    # Add separator and light/dark cycle customization
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🌓 Light/Dark Cycle")
+    
+    # Default is 7AM to 7PM (7-19 in 24hr format)
+    light_start = st.sidebar.slider(
+        "Light cycle starts at",
+        min_value=0,
+        max_value=23,
+        value=7,
+        step=1,
+        format="%d:00",
+        help="Hour when light cycle begins (24-hour format)",
+        key="light_start_hour"
+    )
+    
+    light_end = st.sidebar.slider(
+        "Light cycle ends at",
+        min_value=0,
+        max_value=23,
+        value=19,
+        step=1,
+        format="%d:00",
+        help="Hour when light cycle ends (24-hour format)",
+        key="light_end_hour"
+    )
+    
+    # Store light/dark times in session state for use throughout the app
+    st.session_state['light_start'] = light_start
+    st.session_state['light_end'] = light_end
+    
+    # Provide visual confirmation and explanation
+    if light_start < light_end:
+        st.sidebar.info(f"Light cycle: {light_start}:00 - {light_end}:00\nDark cycle: {light_end}:00 - {light_start}:00")
+    else:
+        st.sidebar.warning("Light start time should be earlier than end time. Using default 7AM-7PM.")
+        st.session_state['light_start'] = 7
+        st.session_state['light_end'] = 19
 
     # Add a separator and enhanced lean mass adjustment option
     if parameter in ["VO2", "VCO2", "HEAT"]:
@@ -931,8 +986,8 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                 st.markdown("**❓ What's the light/dark cycle?**")
                 st.markdown("""
                 For rodents:
-                - **Light cycle (7AM-7PM):** Resting period (less active)
-                - **Dark cycle (7PM-7AM):** Active period (more active)
+                - **Light cycle (7AM-7PM):** Resting period (less active) - UPDATE TO REFLECT USER HOURS
+                - **Dark cycle (7PM-7AM):** Active period (more active) - UPDATE TO REFLECT USER HOURS
                 
                 Different parameters may show stronger differences during specific cycles.
                 """)
@@ -1442,9 +1497,17 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                         showlegend=False
                     ))
                 
+                # Get custom light/dark cycle times from session state
+                light_start = st.session_state.get('light_start', 7)  # Default to 7AM if not set
+                light_end = st.session_state.get('light_end', 19)     # Default to 7PM if not set
+                
+                # Get custom light/dark cycle times from session state
+                light_start = st.session_state.get('light_start', 7)  # Default to 7AM if not set
+                light_end = st.session_state.get('light_end', 19)     # Default to 7PM if not set
+                
                 # Add shaded regions for dark and light cycles - with higher opacity
                 for hour in range(0, 24):
-                    if hour < 7 or hour >= 19:  # Dark cycle (7PM-7AM)
+                    if hour < light_start or hour >= light_end:  # Dark cycle 
                         fig.add_vrect(
                             x0=hour - 0.5,
                             x1=hour + 0.5,
@@ -1452,7 +1515,7 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                             layer="below",
                             line_width=0,
                         )
-                    else:  # Light cycle (7AM-7PM)
+                    else:  # Light cycle
                         fig.add_vrect(
                             x0=hour - 0.5,
                             x1=hour + 0.5,
@@ -1461,13 +1524,22 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                             line_width=0,
                         )
 
+                # Get custom light/dark cycle times from session state
+                light_start = st.session_state.get('light_start', 7)  # Default to 7AM
+                light_end = st.session_state.get('light_end', 19)     # Default to 7PM
+                
+                # Calculate good positions for the annotations based on cycle times
+                dark_morning_center = max(light_start // 2, 3)  # Center of morning dark period
+                light_center = (light_start + light_end) // 2   # Center of light period
+                dark_evening_center = min(light_end + (24 - light_end) // 2, 21)  # Center of evening dark period
+                
                 # Add more prominent cycle labels
                 fig.add_annotation(
-                    x=3, y=1.12,  # Moved higher
+                    x=dark_morning_center, y=1.12,  # Positioned in first dark cycle
                     xref="x", yref="paper",
                     text="Dark Cycle",
                     showarrow=False,
-                    font=dict(size=16, color="white", family="Arial Black"),  # Bigger, bold, white text
+                    font=dict(size=16, color="white", family="Arial Black"),
                     bgcolor="rgba(0,0,0,0.7)",  # Much darker background
                     bordercolor="white",
                     borderwidth=2,
@@ -1475,11 +1547,11 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                 )
 
                 fig.add_annotation(
-                    x=13, y=1.12,  # Moved higher
+                    x=light_center, y=1.12,  # Positioned in light cycle
                     xref="x", yref="paper",
                     text="Light Cycle",
                     showarrow=False,
-                    font=dict(size=16, color="black", family="Arial Black"),  # Bigger, bold text
+                    font=dict(size=16, color="black", family="Arial Black"),
                     bgcolor="rgba(255,255,0,0.6)",  # Much more visible yellow
                     bordercolor="black",
                     borderwidth=2,
@@ -1487,11 +1559,11 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                 )
 
                 fig.add_annotation(
-                    x=21, y=1.12,  # Moved higher
+                    x=dark_evening_center, y=1.12,  # Positioned in second dark cycle
                     xref="x", yref="paper",
                     text="Dark Cycle",
                     showarrow=False,
-                    font=dict(size=16, color="white", family="Arial Black"),  # Bigger, bold, white text
+                    font=dict(size=16, color="white", family="Arial Black"),
                     bgcolor="rgba(0,0,0,0.7)",  # Much darker background
                     bordercolor="white",
                     borderwidth=2,
@@ -1892,26 +1964,37 @@ def process_clams_data(file, parameter_type):
 
         # Combine all data and process time window
         df_processed = pd.concat(all_data, ignore_index=True)
-        # Replaced old end_time start_time with this (days to analyze)
-        days_to_analyze = {
-            "Last 24 Hours": 1,
-            "Last 48 Hours": 2,
-            "Last 72 Hours": 3
-        }[time_window]
+        
+        # Determine days to analyze based on selected time window
+        if time_window == "Entire Dataset":
+            # Use all data without filtering by time
+            df_24h = df_processed.copy()
+        else:
+            if time_window == "Custom Range":
+                days_to_analyze = st.session_state.get("custom_days_input", 5)
+            else:
+                days_to_analyze = {
+                    "Last 24 Hours": 1,
+                    "Last 48 Hours": 2,
+                    "Last 72 Hours": 3,
+                    "Last 7 Days": 7,
+                    "Last 14 Days": 14
+                }.get(time_window, 1)  # Default to 1 day if not found
 
-        end_time = df_processed['timestamp'].max()
-        start_time = end_time - pd.Timedelta(days=days_to_analyze)
+            end_time = df_processed['timestamp'].max()
+            start_time = end_time - pd.Timedelta(days=days_to_analyze)
 
-        # Add this check
-        total_hours = (df_processed['timestamp'].max() - df_processed['timestamp'].min()).total_seconds() / 3600
-        if total_hours < (days_to_analyze * 24):
-            st.error(f"Not enough data for {time_window} analysis. File contains approximately {total_hours:.1f} hours of data.")
-            return None, None, None
+            # Add this check
+            total_hours = (df_processed['timestamp'].max() - df_processed['timestamp'].min()).total_seconds() / 3600
+            if total_hours < (days_to_analyze * 24):
+                st.error(f"Not enough data for {time_window} analysis. File contains approximately {total_hours:.1f} hours of data.")
+                return None, None, None
 
-        df_24h = df_processed[
-            (df_processed['timestamp'] >= start_time) &
-            (df_processed['timestamp'] <= end_time)
-        ].copy()
+            df_24h = df_processed[
+                (df_processed['timestamp'] >= start_time) &
+                (df_processed['timestamp'] <= end_time)
+            ].copy()
+        
         # Apply lean mass adjustment if enabled
         if parameter_type in ["VO2", "VCO2", "HEAT"] and 'lean_mass_data' in st.session_state and st.session_state.get("apply_lean_mass", False):
             # Store original values
@@ -1929,10 +2012,12 @@ def process_clams_data(file, parameter_type):
             # Add note about adjustment
             st.info(f"{parameter_type} values have been normalized to a reference lean mass of {reference_mass}g")
 
-        # Add light/dark cycle
+        # Add light/dark cycle using customizable times from session state
         df_24h['hour'] = df_24h['timestamp'].dt.hour
-        df_24h['is_light'] = (df_24h['hour'] >= 7) & (df_24h['hour'] < 19)
-
+        light_start = st.session_state.get('light_start', 7)  # Default to 7AM if not set
+        light_end = st.session_state.get('light_end', 19)     # Default to 7PM if not set
+        df_24h['is_light'] = (df_24h['hour'] >= light_start) & (df_24h['hour'] < light_end)
+        
         # Calculate results based on parameter type
         if parameter_type in ["XTOT", "XAMB"]:
             results = df_24h.groupby(['cage', 'is_light'])['value'].agg([
@@ -2213,6 +2298,22 @@ with tab1:
     else:
         # When file is uploaded, just show the header followed by parameter guide
         st.header("📊 Overview")
+        
+        # Add Steps to Follow guide
+        with st.expander("🔎 Steps to Follow", expanded=True):
+            st.markdown("""
+            ### Please Read Before Starting - Analysis Workflow:
+            
+            1. **Upload Data**: Use the sidebar to upload your CLAMS CSV file
+            2. **Set Parameters**: Choose the parameter type and time window in the sidebar
+            3. **Assign Groups**: Expand the Group Assignment section below to categorize your animals
+            4. **Review Results**: Examine the visualizations and data tables in this tab
+            5. **Statistical Analysis**: Switch to the Statistical Analysis tab to compare groups
+            6. **Verify Calculations**: Use the Verification tab to understand how values are calculated
+            7. **Export Data**: Download your results in CSV format for further analysis
+            
+            **Tip**: For best results, assign your animals to experimental groups before analyzing the data.
+            """)
 
     # Add Parameter Guide expander
     with st.expander("📚 CLAMS Parameter Guide - Learn about each measurement", expanded=False):
@@ -2346,7 +2447,7 @@ if uploaded_file is not None:
                     has_groups = 'group_assignments' in st.session_state and not st.session_state.get('group_assignments', pd.DataFrame()).empty
 
                     # Create expander with smart default state (expanded if no groups assigned)
-                    with st.expander("Assign Animals to Groups", expanded=not has_groups):
+                    with st.expander("Assign Animals to Groups", expanded=False):
                         st.info("Assign your animals to experimental groups before proceeding with visualization.")
 
                         cage_info = extract_cage_info(uploaded_file)
@@ -2647,13 +2748,17 @@ if uploaded_file is not None:
                     max_date = timeline_summary['datetime'].max().date()
                     current_date = min_date
 
+                    # Get custom light/dark cycle times from session state
+                    light_start = st.session_state.get('light_start', 7)  # Default to 7AM if not set
+                    light_end = st.session_state.get('light_end', 19)     # Default to 7PM if not set
+
                     while current_date <= max_date:
-                        # Add dark cycle from midnight to 7 AM
+                        # Add dark cycle from midnight to light_start
                         morning_start = pd.Timestamp(current_date.strftime('%Y-%m-%d') + ' 00:00:00')
-                        morning_end = pd.Timestamp(current_date.strftime('%Y-%m-%d') + ' 07:00:00')
+                        morning_end = pd.Timestamp(current_date.strftime('%Y-%m-%d') + f' {light_start:02d}:00:00')
                         
-                        # Add dark cycle from 7 PM to midnight
-                        evening_start = pd.Timestamp(current_date.strftime('%Y-%m-%d') + ' 19:00:00')
+                        # Add dark cycle from light_end to midnight
+                        evening_start = pd.Timestamp(current_date.strftime('%Y-%m-%d') + f' {light_end:02d}:00:00')
                         evening_end = pd.Timestamp(current_date.strftime('%Y-%m-%d') + ' 23:59:59')
                         
                         # Add the dark cycle rectangles
@@ -2984,22 +3089,33 @@ if uploaded_file is not None:
                 
                 # Add time window filtering to raw data display
                 if raw_data is not None:
-                    # Get current time window selection
-                    days_to_analyze = {
-                        "Last 24 Hours": 1,
-                        "Last 48 Hours": 2,
-                        "Last 72 Hours": 3
-                    }.get(time_window, 1)  # Default to 1 day if not found
-                    
-                    # Calculate the time window
-                    end_time = raw_data['timestamp'].max()
-                    start_time = end_time - pd.Timedelta(days=days_to_analyze)
-                    
-                    # Create a properly filtered dataset for display
-                    filtered_raw_data = raw_data[
-                        (raw_data['timestamp'] >= start_time) & 
-                        (raw_data['timestamp'] <= end_time)
-                    ].copy()
+                    if time_window == "Entire Dataset":
+                        # Use all data without filtering
+                        filtered_raw_data = raw_data.copy()
+                        start_time = raw_data['timestamp'].min()
+                        end_time = raw_data['timestamp'].max()
+                    else:
+                        # Get current time window selection
+                        if time_window == "Custom Range":
+                            days_to_analyze = st.session_state.get("custom_days_input", 5)
+                        else:
+                            days_to_analyze = {
+                                "Last 24 Hours": 1,
+                                "Last 48 Hours": 2,
+                                "Last 72 Hours": 3,
+                                "Last 7 Days": 7,
+                                "Last 14 Days": 14
+                            }.get(time_window, 1)  # Default to 1 day if not found
+                        
+                        # Calculate the time window
+                        end_time = raw_data['timestamp'].max()
+                        start_time = end_time - pd.Timedelta(days=days_to_analyze)
+                        
+                        # Create a properly filtered dataset for display
+                        filtered_raw_data = raw_data[
+                            (raw_data['timestamp'] >= start_time) & 
+                            (raw_data['timestamp'] <= end_time)
+                        ].copy()
                     
                     # Show time period info
                     st.info(f"Analysis period: {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')} ({len(filtered_raw_data):,} records)")
@@ -3036,8 +3152,7 @@ if uploaded_file is not None:
                     st.markdown(f"""
                     - Time Window: {time_window}
                     - Analysis Period: {raw_data['timestamp'].min().strftime('%Y-%m-%d %H:%M')} to {raw_data['timestamp'].max().strftime('%Y-%m-%d %H:%M')}
-                    - Light Cycle: 7:00 AM - 7:00 PM
-                    - Dark Cycle: 7:00 PM - 7:00 AM
+                    - Light Cycle: 7:00 AM - 7:00 PM - UPDATE TO REFLECT USER HOURS
+                    - Dark Cycle: 7:00 PM - 7:00 AM - UPDATE TO REFLECT USER HOURS
                     - Total Records Processed: {len(raw_data):,}
                     """)
-
