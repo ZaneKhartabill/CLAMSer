@@ -2,9 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import io               # Added for download buttons
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt # Added for publication plots
 import matplotlib.colors as mcolors
+import scienceplots # Added for publication plots
 import re
 import markdown
 from scipy import stats
@@ -2263,7 +2266,118 @@ def show_verification_calcs(df_24h, results, hourly_results, parameter):
         
         st.write(f"- Hour 0 Average: {hourly_results.iloc[0][0]:.2f}")
         
+def generate_pub_bar_chart(group_stats, parameter, error_bar_type='SEM', colors=None, cycle_name="24-hour Average"):
+    """
+    Generates a publication-ready bar chart using Matplotlib and scienceplots.
 
+    Args:
+        group_stats (pd.DataFrame): DataFrame containing group statistics (Mean, SD, SEM, N).
+                                    Must have 'Group', 'Mean', 'SD', 'SEM', 'N' columns.
+        parameter (str): Name of the parameter being plotted (e.g., 'VO2').
+        error_bar_type (str): Type of error bar to display ('SEM' or 'SD').
+        colors (dict, optional): Dictionary mapping group names to colors. Defaults to scienceplots default.
+
+    Returns:
+        matplotlib.figure.Figure: The generated Matplotlib figure object.
+    """
+    plt.style.use(['science', 'no-latex']) # Apply scienceplots style
+
+    fig, ax = plt.subplots(figsize=(6, 4)) # Create figure and axes (adjust size later)
+
+    if colors is None:
+        colors = {} # Use default colors if none provided
+
+    groups = group_stats['Group']
+    means = group_stats['Mean']
+
+    # Determine error values
+    if error_bar_type == 'SD':
+        errors = group_stats['SD']
+        error_label = 'SD'
+    else:
+        errors = group_stats['SEM']
+        error_label = 'SEM'
+
+    # Create bars
+    for i, group in enumerate(groups):
+        ax.bar(i, means.iloc[i],
+               yerr=errors.iloc[i],
+               capsize=5, # Add error bar caps
+               label=group,
+               color=colors.get(group, f'C{i}')) # Use provided color or default cycle
+
+    # --- Placeholder ---
+    # We will add more styling, labels, titles, and significance annotations later
+    ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
+    ax.set_title(f"{parameter} by Group ({cycle_name}, {error_label})")
+    ax.set_xticks(range(len(groups)))
+    ax.set_xticklabels(groups, rotation=45, ha='right')
+    ax.legend(loc ='upper right', fontsize='small')
+    plt.tight_layout()
+    # --- End Placeholder ---
+
+
+    return fig
+
+def generate_pub_24h_pattern_plot(hourly_df, selected_groups, parameter, light_start, light_end, colors=None):
+    """
+    Generates a publication-ready 24-hour pattern line plot using Matplotlib and scienceplots.
+
+    Args:
+        hourly_df (pd.DataFrame): DataFrame containing hourly stats (mean, sem) for groups.
+                                  Must have 'Group', 'hour', 'mean', 'sem' columns.
+        selected_groups (list): List of group names to plot.
+        parameter (str): Name of the parameter being plotted (e.g., 'VO2').
+        light_start (int): Hour when the light cycle starts (0-23).
+        light_end (int): Hour when the light cycle ends (0-23).
+        colors (dict, optional): Dictionary mapping group names to colors. Defaults to scienceplots default.
+
+    Returns:
+        matplotlib.figure.Figure: The generated Matplotlib figure object.
+    """
+    plt.style.use(['science', 'no-latex']) # Apply scienceplots style
+    fig, ax = plt.subplots(figsize=(8, 4)) # Create figure and axes (adjust size later)
+
+    if colors is None:
+        colors = {} # Use default colors if none provided
+
+    # Plot line and SEM bands for each selected group
+    for i, group in enumerate(selected_groups):
+        group_data = hourly_df[hourly_df['Group'] == group]
+        if not group_data.empty:
+            line_color = colors.get(group, f'C{i}') # Get color or use default cycle
+            # Plot main line
+            ax.plot(group_data['hour'], group_data['mean'],
+                    label=group,
+                    color=line_color,
+                    marker='o', # Add markers
+                    markersize=4,
+                    linewidth=1.5)
+            # Plot SEM bands
+            ax.fill_between(group_data['hour'],
+                            group_data['mean'] - group_data['sem'],
+                            group_data['mean'] + group_data['sem'],
+                            color=line_color,
+                            alpha=0.15) # Make bands semi-transparent
+
+    # --- Add Light/Dark Shading ---
+    # Use axvspan for vertical shading across the plot height
+    ax.axvspan(-0.5, light_start - 0.5, facecolor='grey', alpha=0.15, zorder=-10, lw=0) # Morning dark
+    ax.axvspan(light_end - 0.5, 23.5, facecolor='grey', alpha=0.15, zorder=-10, lw=0) # Evening dark
+    # Optional: Add light cycle shading too (often just white background is used)
+    # ax.axvspan(light_start - 0.5, light_end - 0.5, facecolor='#FFFACD', alpha=0.2, zorder=-10, lw=0) # Light
+
+    # --- Placeholder for further styling ---
+    ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
+    ax.set_xlabel("Hour of Day")
+    ax.set_title(f"{parameter} 24-Hour Pattern (Mean ± SEM)")
+    ax.set_xticks(range(0, 25, 2)) # Set x-axis ticks every 2 hours
+    ax.set_xlim(-0.5, 23.5) # Set x-axis limits
+    ax.legend(loc='upper right', fontsize='small')
+    plt.tight_layout()
+    # --- End Placeholder ---
+
+    return fig
         
 # Parameter selection with descriptions
 parameter_descriptions = {
@@ -2277,7 +2391,7 @@ parameter_descriptions = {
 }
 
 # Create tabs for organization
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", "🧪 Verification"])
+tab1, tab2, tab4, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", "📄 Publication Plots", "🧪 Verification"])
 
 with tab1:
     # Only show welcome message if no file is uploaded
@@ -3081,7 +3195,199 @@ if uploaded_file is not None:
                     simplified_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window)
                 else:
                     st.warning("Please upload data in the Overview tab first")
-                    
+            # Tab 4: Publication Plots
+            with tab4:
+                st.header("📄 Publication Plots")
+                st.markdown("""
+                Generate publication-ready versions of your key plots using Matplotlib
+                with `scienceplots` styling.
+                """)
+
+                # Check if data and groups are available from previous steps
+                # Note: 'results', 'raw_data' are assumed to be loaded if uploaded_file is not None
+                # This relies on the execution flow where process_clams_data runs first.
+                if uploaded_file is None or 'results' not in locals() or results is None or 'raw_data' not in locals() or raw_data is None:
+                    st.warning("⚠️ Please upload data via the sidebar first.")
+                elif 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
+                    st.warning("⚠️ Please assign groups in the 'Overview' tab first.")
+                else:
+                    # --- Plot Selection and Customization ---
+                    st.markdown("---")
+                    plot_type = st.radio(
+                        "Select Plot Type:",
+                        ["Group Comparison Bar Chart", "24h Pattern"], # Added "24h Pattern"
+                        key="pub_plot_type",
+                        horizontal=True # Make selection horizontal
+                    )
+
+                    # --- Conditional Plot Generation ---
+
+                    if plot_type == "Group Comparison Bar Chart":
+                        # --- Bar Chart Specific Code ---
+                        st.subheader("Bar Chart Options")
+                        col1_opts, col2_opts = st.columns(2)
+                        with col1_opts:
+                            cycle_choice_pub = st.radio("Select data to plot:", ["24-hour Average", "Light Cycle", "Dark Cycle"], key="pub_cycle_selector_bar", horizontal=False)
+                        with col2_opts:
+                            error_bar_choice = st.radio("Error Bar Type:", ["SEM", "SD"], key="pub_error_bar", horizontal=False)
+
+                        # Determine cycle filter based on choice
+                        if "Light Cycle" in cycle_choice_pub:
+                            cycle_filter_pub = True
+                            cycle_name_pub = "Light Cycle"
+                        elif "Dark Cycle" in cycle_choice_pub:
+                            cycle_filter_pub = False
+                            cycle_name_pub = "Dark Cycle"
+                        else:
+                            cycle_filter_pub = None
+                            cycle_name_pub = "24-hour Average"
+
+                        # --- Data Preparation ---
+                        group_assignments = st.session_state['group_assignments']
+                        try:
+                            # Ensure normalization functions are available or applied if needed
+                            if 'normalized_cage_id' not in raw_data.columns:
+                                def normalize_cage_id(cage_str): import re; match = re.search(r'(\d+)', str(cage_str)); cage_num = match.group(1) if match else None; return ('1' + cage_num if len(cage_num) == 2 else cage_num) if cage_num else None
+                                raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id) # Apply directly here if needed
+                            if 'normalized_cage_id' not in group_assignments.columns:
+                                if 'Cage' in group_assignments.columns: group_assignments.loc[:, 'normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
+                                else: st.error("Group assignments missing 'Cage' column."); st.stop()
+
+                            if 'normalized_cage_id' in raw_data.columns and 'normalized_cage_id' in group_assignments.columns:
+                                grouped_data_pub = pd.merge(raw_data, group_assignments[['normalized_cage_id', 'Group', 'Subject ID']], on='normalized_cage_id', how='inner')
+                            else: st.error("Normalized cage ID missing. Cannot merge."); st.stop()
+                            if grouped_data_pub.empty: st.error("Merging resulted in empty data."); st.stop()
+
+                            # Calculate group statistics based on selected cycle
+                            if cycle_filter_pub is not None:
+                                filtered_cycle_data = grouped_data_pub[grouped_data_pub['is_light'] == cycle_filter_pub]
+                                if filtered_cycle_data.empty: st.warning(f"No data for {cycle_name_pub}."); st.stop()
+                                group_stats_pub = filtered_cycle_data.groupby(['Group', 'Subject ID'])['value'].agg(Mean='mean').reset_index().groupby('Group').agg(Mean=('Mean', 'mean'), SD=('Mean', 'std'), SEM=('Mean', 'sem'), N=('Subject ID', 'nunique')).reset_index()
+                            else:
+                                group_stats_pub = grouped_data_pub.groupby(['Group', 'Subject ID'])['value'].agg(Mean='mean').reset_index().groupby('Group').agg(Mean=('Mean', 'mean'), SD=('Mean', 'std'), SEM=('Mean', 'sem'), N=('Subject ID', 'nunique')).reset_index()
+                            if group_stats_pub.empty: st.error("Group stats calculation failed."); st.stop()
+
+                            # --- Generate and Display Plot ---
+                            pub_fig_bar = generate_pub_bar_chart(group_stats=group_stats_pub, parameter=parameter, error_bar_type=error_bar_choice, cycle_name=cycle_name_pub)
+                            st.pyplot(pub_fig_bar)
+
+                            # --- Description ---
+                            with st.expander("What am I looking at? (Calculation Details)"):
+                                st.markdown(f"""
+                                This bar chart shows the **mean {parameter}** value for each experimental group you assigned.
+
+                                * **Bars**: The height of each bar represents the average value for all animals within that group.
+                                * **Error Bars**: The lines extending from the bars represent the **{error_bar_choice}** (Standard Error of the Mean or Standard Deviation).
+                                    * SEM indicates the precision of the group mean estimate.
+                                    * SD indicates the variability among the individual animals within the group.
+                                * **Calculation Basis**: These averages are calculated using the **{cycle_name_pub}** data for each animal within the selected time window (`{time_window}`).
+                                * **Styling**: The plot uses `scienceplots` for a publication-ready appearance.
+                                """)
+
+                            # --- Downloads ---
+                            st.markdown("---"); st.subheader("Download Plot")
+                            # (Buffer function assumed defined globally or imported if needed)
+                            png_buffer = save_figure_to_buffer(pub_fig_bar, 'png'); pdf_buffer = save_figure_to_buffer(pub_fig_bar, 'pdf'); svg_buffer = save_figure_to_buffer(pub_fig_bar, 'svg')
+                            col1, col2, col3 = st.columns(3)
+                            dl_file_prefix = f"{parameter}_{cycle_name_pub.replace(' ', '_')}_bar" # Create filename prefix
+                            with col1: st.download_button(f"Download PNG", png_buffer, f"{dl_file_prefix}.png", "image/png", key="png_pub_bar")
+                            with col2: st.download_button(f"Download PDF", pdf_buffer, f"{dl_file_prefix}.pdf", "application/pdf", key="pdf_pub_bar")
+                            with col3: st.download_button(f"Download SVG", svg_buffer, f"{dl_file_prefix}.svg", "image/svg+xml", key="svg_pub_bar")
+                            plt.close(pub_fig_bar) # Close the figure
+
+                        except Exception as e: st.error(f"Error during Bar Chart generation: {e}"); st.exception(e)
+
+                    # This 'elif' must be indented at the same level as the 'if' above it
+                    elif plot_type == "24h Pattern":
+                        # --- 24h Pattern Specific Code ---
+                        st.subheader("24h Pattern Plot Options")
+                        all_groups = sorted(st.session_state['group_assignments']['Group'].unique())
+                        selected_groups_pub = st.multiselect(
+                            "Select groups to display:", options=all_groups, default=all_groups[:min(4, len(all_groups))], key="pub_pattern_group_select"
+                        )
+
+                        if not selected_groups_pub:
+                            st.warning("Please select at least one group to display.")
+                            st.stop()
+
+                        # --- Data Preparation ---
+                        group_assignments = st.session_state['group_assignments']
+                        try:
+                            # Ensure normalization is done if needed (copied logic for safety)
+                            if 'normalized_cage_id' not in raw_data.columns:
+                                def normalize_cage_id(cage_str): import re; match = re.search(r'(\d+)', str(cage_str)); cage_num = match.group(1) if match else None; return ('1' + cage_num if len(cage_num) == 2 else cage_num) if cage_num else None
+                                raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id)
+                            if 'normalized_cage_id' not in group_assignments.columns:
+                                if 'Cage' in group_assignments.columns: group_assignments.loc[:, 'normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
+                                else: st.error("Group assignments missing 'Cage' column."); st.stop()
+
+                            # Merge data
+                            if 'normalized_cage_id' in raw_data.columns and 'normalized_cage_id' in group_assignments.columns:
+                                grouped_data_pub = pd.merge(raw_data, group_assignments[['normalized_cage_id', 'Group', 'Subject ID']], on='normalized_cage_id', how='inner')
+                            else: st.error("Normalized cage ID missing. Cannot merge."); st.stop()
+
+                            # Filter for selected groups
+                            grouped_data_filtered = grouped_data_pub[grouped_data_pub['Group'].isin(selected_groups_pub)]
+                            if grouped_data_filtered.empty: st.warning("No data found for selected groups."); st.stop()
+
+                            # Calculate hourly stats
+                            hourly_stats_list = []
+                            for group in selected_groups_pub:
+                                group_hourly_data = grouped_data_filtered[grouped_data_filtered['Group'] == group]
+                                if not group_hourly_data.empty:
+                                    # Ensure 'hour' column exists (it should from process_clams_data)
+                                    if 'hour' not in group_hourly_data.columns:
+                                        st.error("'hour' column missing from prepared data. Cannot calculate hourly stats.")
+                                        st.stop()
+                                    hourly_avg = group_hourly_data.groupby('hour')['value'].agg(['mean', 'sem']).reset_index()
+                                    hourly_avg['Group'] = group
+                                    hourly_stats_list.append(hourly_avg)
+
+                            if not hourly_stats_list: st.error("Could not calculate hourly statistics."); st.stop()
+                            hourly_df_pub = pd.concat(hourly_stats_list).reset_index(drop=True)
+
+                            # Ensure all hours 0-23 are present for each group
+                            all_hours_index = pd.MultiIndex.from_product([selected_groups_pub, range(24)], names=['Group', 'hour'])
+                            hourly_df_pub = hourly_df_pub.set_index(['Group', 'hour']).reindex(all_hours_index).reset_index()
+
+                            # --- Generate and Display Plot ---
+                            pub_fig_pattern = generate_pub_24h_pattern_plot(
+                                hourly_df=hourly_df_pub, selected_groups=selected_groups_pub, parameter=parameter,
+                                light_start=st.session_state.get('light_start', 7), light_end=st.session_state.get('light_end', 19)
+                            )
+                            st.pyplot(pub_fig_pattern)
+
+                            # --- Description ---
+                            with st.expander("What am I looking at? (Calculation Details)"):
+                                st.markdown(f"""
+                                This line plot shows the **average {parameter} value** for each hour of a typical day (0-23).
+
+                                * **Lines**: Each colored line represents the average pattern for an experimental group.
+                                * **Shaded Bands**: The semi-transparent areas around each line represent the **SEM** (Standard Error of the Mean), indicating the precision of the hourly average.
+                                * **Calculation Basis**: Data from all days within the selected time window (`{time_window}`) is averaged for each hour to create a single 24-hour profile.
+                                * **Background Shading**: Grey shaded areas indicate the **Dark Cycle** based on the start/end times set in the sidebar.
+                                * **Styling**: The plot uses `scienceplots` for a publication-ready appearance.
+                                """)
+
+                            # --- Downloads ---
+                            st.markdown("---"); st.subheader("Download Plot")
+                            # (Buffer function assumed defined globally or imported)
+                            png_buffer_p = save_figure_to_buffer(pub_fig_pattern, 'png'); pdf_buffer_p = save_figure_to_buffer(pub_fig_pattern, 'pdf'); svg_buffer_p = save_figure_to_buffer(pub_fig_pattern, 'svg')
+                            col1p, col2p, col3p = st.columns(3)
+                            dl_file_prefix_p = f"{parameter}_24h_pattern" # Create filename prefix
+                            with col1p: st.download_button(f"Download PNG", png_buffer_p, f"{dl_file_prefix_p}.png", "image/png", key="png_pub_pattern")
+                            with col2p: st.download_button(f"Download PDF", pdf_buffer_p, f"{dl_file_prefix_p}.pdf", "application/pdf", key="pdf_pub_pattern")
+                            with col3p: st.download_button(f"Download SVG", svg_buffer_p, f"{dl_file_prefix_p}.svg", "image/svg+xml", key="svg_pub_pattern")
+                            plt.close(pub_fig_pattern) # Clear figure
+
+                        except Exception as e: st.error(f"Error during 24h Pattern plot generation: {e}"); st.exception(e)
+
+                    # Add placeholders for other plot types later
+                    # elif plot_type == "Timeline":
+                    #     st.info("Timeline plot coming soon!")
+
+
+
             # Tab 3: Verification
             with tab3:
                 st.subheader("Raw Data Display")
@@ -3145,7 +3451,6 @@ if uploaded_file is not None:
                 ### Questions or feedback?
                 Contact: Menzies Laboratory or Zane Khartabill (email: mkhal061@uottawa.ca)
                 """)
-                
                 # Analysis details - keep this as it's useful for verification
                 st.subheader("Analysis Details")
                 if raw_data is not None:
