@@ -273,22 +273,29 @@ with st.sidebar:
     # Add a separator after the logo
     st.markdown("---")
     
-    # Move parameter selection to sidebar
     st.markdown("## Analysis Settings")
+    st.divider() # Adds a horizontal line
+
+    # --- Parameter Selection ---
+    st.markdown("##### Select Parameter")
     parameter = st.selectbox(
         "Select Parameter",
         list(parameter_descriptions.keys()),
-        format_func=lambda x: f"{x}: {parameter_descriptions[x]}"
+        format_func=lambda x: f"{x}: {parameter_descriptions[x]}",
+        label_visibility="collapsed" # Hide label since we have markdown title
     )
+    st.divider()
 
-    # Move time window selection to sidebar
+    # --- Time Window Selection ---
+    st.markdown("##### Select Time Window")
     time_window = st.radio(
         "Time Window",
         ["Last 24 Hours", "Last 48 Hours", "Last 72 Hours", "Last 7 Days", "Last 14 Days", "Custom Range", "Entire Dataset"],
         help="Choose analysis duration",
-        key="time_window_radio"  
+        key="time_window_radio",
+        label_visibility="collapsed" # Hide label
     )
-    
+
     # Add custom range input if selected
     if time_window == "Custom Range":
         custom_days = st.number_input(
@@ -300,96 +307,102 @@ with st.sidebar:
             help="Enter the number of days to include in analysis (1-30)",
             key="custom_days_input"
         )
-    
+
     # Add note for Entire Dataset
     if time_window == "Entire Dataset":
         st.info("Entire Dataset can be used to inform your specific acclimation period, which you can then analyze using Custom Range.")
-        
-    # Add separator and light/dark cycle customization
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🌓 Light/Dark Cycle")
-    
-    # Default is 7AM to 7PM (7-19 in 24hr format)
-    light_start = st.sidebar.slider(
-        "Light cycle starts at",
+    st.divider()
+
+    # --- Light/Dark Cycle ---
+    st.markdown("##### 🌓 Set Light/Dark Cycle")
+    light_start = st.slider( # Use st.slider directly, no need for st.sidebar here
+        "Light cycle starts at:", # Simplified label
         min_value=0,
         max_value=23,
-        value=7,
+        value=st.session_state.get('light_start', 7), # Get from session state if exists
         step=1,
         format="%d:00",
         help="Hour when light cycle begins (24-hour format)",
         key="light_start_hour"
     )
-    
-    light_end = st.sidebar.slider(
-        "Light cycle ends at",
+
+    light_end = st.slider( # Use st.slider directly
+        "Light cycle ends at:", # Simplified label
         min_value=0,
         max_value=23,
-        value=19,
+        value=st.session_state.get('light_end', 19), # Get from session state if exists
         step=1,
         format="%d:00",
         help="Hour when light cycle ends (24-hour format)",
         key="light_end_hour"
     )
-    
+
     # Store light/dark times in session state for use throughout the app
     st.session_state['light_start'] = light_start
     st.session_state['light_end'] = light_end
-    
+
     # Provide visual confirmation and explanation
     if light_start < light_end:
-        st.sidebar.info(f"Light cycle: {light_start}:00 - {light_end}:00\nDark cycle: {light_end}:00 - {light_start}:00")
+        st.info(f"Light: {light_start}:00 - {light_end}:00 | Dark: {light_end}:00 - {light_start}:00") # Compact info
     else:
-        st.sidebar.warning("Light start time should be earlier than end time. Using default 7AM-7PM.")
+        # Automatically fix if times are invalid
+        st.warning("Light start must be before end time. Resetting to 7-19.")
         st.session_state['light_start'] = 7
         st.session_state['light_end'] = 19
+        # Rerun slightly to update sliders - might cause a brief flicker but ensures consistency
+        st.rerun()
+    st.divider()
 
-    # Add a separator and enhanced lean mass adjustment option
+    # --- Metabolic Normalization ---
+    # Only show this section if the parameter is relevant
     if parameter in ["VO2", "VCO2", "HEAT"]:
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("### 📏 Metabolic Normalization")
-        
-        # Add explanation about lean mass adjustment
-        lm_container = st.sidebar.container()
-        lm_container.info("""
-        **Why normalize to lean mass?**
-        Fat tissue is less metabolically active than lean tissue. Normalizing to lean mass provides more accurate comparisons between animals with different body compositions.
-        """)
-        
-        apply_lean_mass = lm_container.checkbox(
-            "Apply Lean Mass Adjustment",
-            value=False,
-            help="Normalize metabolic data to lean mass instead of total body weight",
-            key="apply_lean_mass"
-        )
-        
-        if apply_lean_mass:
-            # Add reference mass input directly in the sidebar
-            reference_mass = lm_container.number_input(
-                "Reference lean mass (g)",
-                min_value=1.0,
-                value=20.0,
-                step=0.1,
-                format="%.1f",
-                help="Standard lean mass value used for normalization",
-                key="reference_lean_mass_sidebar"
-            )
-            st.session_state['reference_lean_mass'] = reference_mass
-            
-            # Add note about where to input individual animal lean mass values
-            lm_container.info("📌 Upload your file and enter individual animal lean mass values in the Overview tab")
-    else:
-        apply_lean_mass = False
+        st.markdown("##### 📏 Metabolic Normalization")
+        with st.container(border=True): # Use a bordered container
+            st.info("""
+            **Why normalize?** Fat tissue is less metabolically active. Normalizing to lean mass gives fairer comparisons.
+            """)
 
-    st.sidebar.markdown("---")
-        
-    # Move file upload to sidebar
+            # The checkbox widget itself updates session state['apply_lean_mass']
+            apply_lean_mass = st.checkbox(
+                "Apply Lean Mass Adjustment",
+                value=st.session_state.get('apply_lean_mass', False), # Read initial value from session state
+                help="Normalize metabolic data to lean mass instead of total body weight",
+                key="apply_lean_mass" # The key links this widget to session state
+            )
+            # NO NEED to manually set st.session_state['apply_lean_mass'] here
+
+            # Conditionally show the input based on the *current state* of the checkbox
+            # We can read directly from session_state OR use the variable 'apply_lean_mass' which holds the widget's current value
+            if st.session_state.apply_lean_mass: # Read directly from session state for clarity
+                # The number_input widget itself updates session_state['reference_lean_mass']
+                reference_mass = st.number_input(
+                    "Reference lean mass (g):", # Simplified label
+                    min_value=1.0,
+                    value=st.session_state.get('reference_lean_mass', 20.0), # Read initial value from session state
+                    step=0.1,
+                    format="%.1f",
+                    help="Standard lean mass value used for normalization",
+                    key="reference_lean_mass_sidebar" # The key links this widget to session state
+                )
+                # NO NEED to manually set st.session_state['reference_lean_mass'] here
+
+                st.info("📌 Enter individual animal lean masses in the Overview tab after uploading.")
+        st.divider() # Divider after the normalization section
+    else:
+        # If the parameter is not metabolic, ensure the session state flag is False.
+        # This is okay because the 'apply_lean_mass' checkbox widget *isn't* created in this 'else' block.
+        if 'apply_lean_mass' in st.session_state: # Check if it exists before trying to set it
+                st.session_state['apply_lean_mass'] = False
+
+
+    # --- File Upload ---
+    st.markdown("##### Upload Data File")
     uploaded_file = st.file_uploader(
         f"Upload {parameter} CSV",
         type="csv",
         help="Upload your CLAMS data file",
-        key="file_upload_1"
-        
+        key="file_upload_1",
+        label_visibility="collapsed" # Hide label
     )
     
 # Main title in content area
@@ -986,12 +999,16 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
                 - **Non-overlapping error bars** often (but not always) indicate significant differences
                 """)
                 
+                # Get current light/dark times from session state again (or pass them into the function)
+                ls = st.session_state.get('light_start', 7)
+                le = st.session_state.get('light_end', 19)
+
                 st.markdown("**❓ What's the light/dark cycle?**")
-                st.markdown("""
-                For rodents:
-                - **Light cycle (7AM-7PM):** Resting period (less active) - UPDATE TO REFLECT USER HOURS
-                - **Dark cycle (7PM-7AM):** Active period (more active) - UPDATE TO REFLECT USER HOURS
-                
+                st.markdown(f"""
+                Based on your settings:
+                - **Light cycle ({ls:02d}:00 - {le:02d}:00):** Typically the resting period for nocturnal rodents.
+                - **Dark cycle ({le:02d}:00 - {ls:02d}:00):** Typically the active period for nocturnal rodents.
+
                 Different parameters may show stronger differences during specific cycles.
                 """)
 
@@ -1010,13 +1027,44 @@ def simplified_statistical_analysis(tab2, raw_data, results, parameter, paramete
         # Create a more distinct separation between settings and analysis info
         st.markdown("### Settings")
 
-        # Cycle selection with visual indicators
+        # Get current light/dark times from session state
+        ls = st.session_state.get('light_start', 7)
+        le = st.session_state.get('light_end', 19)
+
+        # Cycle selection with visual indicators using dynamic labels
+        light_label = f"Light Cycle ({ls:02d}:00 - {le:02d}:00)"
+        dark_label = f"Dark Cycle ({le:02d}:00 - {ls:02d}:00)"
+
+        cycle_options = [light_label, dark_label, "24-hour Average"]
+        # Ensure the previously selected cycle index is preserved if labels change
+        current_cycle_index = st.session_state.get('simple_cycle_selector_index', 0)
+        if cycle != cycle_options[current_cycle_index]: # If labels changed, find the new index
+                try:
+                    current_cycle_index = cycle_options.index(cycle)
+                except ValueError: # If previous selection doesn't exist anymore
+                    current_cycle_index = 0
+
         cycle = st.radio(
             "Select data to analyze:",
-            ["Light Cycle (7AM-7PM)", "Dark Cycle (7PM-7AM)", "24-hour Average"],
-            key="simple_cycle_selector",
+            options=cycle_options,
+            index=current_cycle_index, # Set index to try and preserve selection
+            key="simple_cycle_selector", # Keep the key
             help="Choose which part of the day to analyze"
         )
+        # Store the selected index for next time
+        st.session_state['simple_cycle_selector_index'] = cycle_options.index(cycle)
+
+        # --- IMPORTANT: Update cycle filter logic to use labels ---
+        # Convert cycle selection to filter (using the dynamic labels)
+        if cycle == light_label:
+                cycle_filter = True
+                cycle_name = "Light Cycle" # Keep generic name for internal use/titles
+        elif cycle == dark_label:
+                cycle_filter = False
+                cycle_name = "Dark Cycle" # Keep generic name
+        else: # 24-hour Average
+                cycle_filter = None
+                cycle_name = "24-hour Average"
 
         # Group selection
         available_groups = sorted(group_assignments['Group'].unique())
@@ -2373,11 +2421,115 @@ def generate_pub_24h_pattern_plot(hourly_df, selected_groups, parameter, light_s
     ax.set_title(f"{parameter} 24-Hour Pattern (Mean ± SEM)")
     ax.set_xticks(range(0, 25, 2)) # Set x-axis ticks every 2 hours
     ax.set_xlim(-0.5, 23.5) # Set x-axis limits
-    ax.legend(loc='upper right', fontsize='small')
+    ax.legend(loc='best', fontsize='small')
     plt.tight_layout()
     # --- End Placeholder ---
 
     return fig
+
+def generate_pub_timeline_plot(timeline_data, parameter, time_window, subject_to_cage, display_mode="Average", selected_subjects=None, subject_to_group=None, colors=None, light_start=7, light_end=19):
+        """
+        Generates a publication-ready timeline plot using Matplotlib and scienceplots.
+
+
+        Args:
+            timeline_data (pd.DataFrame): DataFrame with 'datetime'.
+                                          If display_mode is 'Average', expects 'Mean', 'SEM' cols.
+                                          If display_mode is 'Individual', expects 'cage', 'value' cols.
+            parameter (str): Name of the parameter being plotted.
+            time_window (str): Description of the time window (e.g., "Last 72 Hours").
+            subject_to_cage (dict): Mapping from Subject ID to positional cage name.
+            display_mode (str): "Average" or "Individual".
+            selected_subjects (list, optional): List of subject IDs if mode is "Individual".
+            subject_to_group (dict, optional): Mapping from subject ID to group name.
+            colors (dict, optional): Mapping group or subject IDs to colors.
+            light_start (int): Hour light cycle starts.
+            light_end (int): Hour light cycle ends.
+
+
+        Returns:
+            matplotlib.figure.Figure: The generated Matplotlib figure object.
+        """
+        plt.style.use(['science', 'no-latex'])
+        fig, ax = plt.subplots(figsize=(10, 4)) # Wider figure for timeline
+
+        if colors is None: colors = {}
+
+        y_min_data = float('inf') # Initialize min/max for y-axis scaling
+        y_max_data = float('-inf')
+
+        if display_mode == "Average":
+            if not all(col in timeline_data.columns for col in ['datetime', 'Mean', 'SEM']):
+                 st.error("Error: 'datetime', 'Mean', or 'SEM' column missing for average timeline plot.")
+                 return fig # Return empty fig if essential columns are missing
+
+            # Plot average line
+            ax.plot(timeline_data['datetime'], timeline_data['Mean'], label=f'Mean {parameter}', color='k', linewidth=1.5)
+            # Plot SEM band
+            ax.fill_between(timeline_data['datetime'],
+                            timeline_data['Mean'] - timeline_data['SEM'],
+                            timeline_data['Mean'] + timeline_data['SEM'],
+                            color='k', alpha=0.15)
+            # Update min/max for y-axis
+            y_min_data = min(y_min_data, (timeline_data['Mean'] - timeline_data['SEM']).min())
+            y_max_data = max(y_max_data, (timeline_data['Mean'] + timeline_data['SEM']).max())
+
+        elif display_mode == "Individual" and selected_subjects is not None:
+            if not all(col in timeline_data.columns for col in ['datetime', 'cage', 'value']):
+                 st.error("Error: 'datetime', 'cage', or 'value' column missing for individual timeline plot.")
+                 return fig # Return empty fig
+
+            # Create inverse mapping: cage -> subject_id (needed for legend)
+            cage_to_subject = {v: k for k, v in subject_to_cage.items()}
+
+            plotted_cages = timeline_data['cage'].unique()
+            for i, cage in enumerate(plotted_cages):
+                 subject_id = cage_to_subject.get(cage, cage) # Get subject ID if possible
+                 # Ensure we only plot subjects that were actually selected AND exist in the map
+                 if subject_id in selected_subjects and cage in cage_to_subject.values():
+                     cage_data = timeline_data[timeline_data['cage'] == cage]
+                     if not cage_data.empty:
+                         line_color = colors.get(subject_id, f'C{i}') # Color by subject or cycle
+                         ax.plot(cage_data['datetime'], cage_data['value'], label=subject_id, color=line_color, linewidth=1)
+                         # Update min/max for y-axis
+                         y_min_data = min(y_min_data, cage_data['value'].min())
+                         y_max_data = max(y_max_data, cage_data['value'].max())
+
+        # --- Add Light/Dark Shading ---
+        min_dt = timeline_data['datetime'].min()
+        max_dt = timeline_data['datetime'].max()
+        current_date = min_dt.date()
+        while pd.Timestamp(current_date) <= max_dt:
+             morning_start = pd.Timestamp(f"{current_date} 00:00:00")
+             morning_end = pd.Timestamp(f"{current_date} {light_start:02d}:00:00")
+             evening_start = pd.Timestamp(f"{current_date} {light_end:02d}:00:00")
+             evening_end = pd.Timestamp(f"{current_date} 23:59:59")
+
+             # Draw rectangles only within the plot's date range
+             ax.axvspan(max(morning_start, min_dt), min(morning_end, max_dt), facecolor='grey', alpha=0.15, zorder=-10, lw=0)
+             ax.axvspan(max(evening_start, min_dt), min(evening_end, max_dt), facecolor='grey', alpha=0.15, zorder=-10, lw=0)
+
+             current_date += timedelta(days=1)
+
+        # --- Set Y-axis Limits --- ADDED BLOCK
+        if y_min_data != float('inf') and y_max_data != float('-inf'): # Check if min/max were updated
+             y_range = y_max_data - y_min_data
+             padding = y_range * 0.1 # Add 10% padding
+             ax.set_ylim(max(0, y_min_data - padding), y_max_data + padding) # Set limits, ensure lower bound is >= 0
+        # --- End of ADDED BLOCK ---
+
+        # --- Styling ---
+        ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
+        ax.set_xlabel("Date and Time")
+        ax.set_title(f"{parameter} Timeline ({time_window}) - {'Average ± SEM' if display_mode == 'Average' else 'Individual Animals'}")
+        fig.autofmt_xdate() # Auto-format dates on x-axis
+        # Only show legend if there's something to label (prevents empty legend box)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+             ax.legend(loc='upper right', fontsize='small')
+        plt.tight_layout()
+
+        return fig
         
 # Parameter selection with descriptions
 parameter_descriptions = {
@@ -2660,61 +2812,96 @@ if uploaded_file is not None:
                             )
                         
                         with col2:
-                            if selected_option == "Show Average Across All Animals":
-                                st.markdown("### 📈 Average View")
-                                st.markdown("""
-                                **You're viewing the average of all animals with standard error bands.**
-                                
-                                - Blue line: Mean value across all animals
-                                - Shaded area: Standard error of the mean (SEM)
-                                - Gray regions: Dark cycle (7PM-7AM)
-                                """)
-                            else:  # Focus on Individual Animals
-                                st.markdown("### 👁️ Individual View")
-                                # Create a mapping from subject ID to cage
-                                subject_to_cage = {}
-                                for cage, subject in zip(results.index, results['Subject ID']):
-                                    subject_to_cage[subject] = cage
-                                
-                                # Get list of available subjects
-                                available_subjects = results['Subject ID'].tolist()
-                                
-                                # Get any group information if available
-                                if 'group_assignments' in st.session_state and not st.session_state['group_assignments'].empty:
-                                    group_df = st.session_state['group_assignments']
-                                    # Create options with group info if available
-                                    subject_options = [f"{subject} ({group_df[group_df['Subject ID']==subject]['Group'].iloc[0]})" 
-                                                    if subject in group_df['Subject ID'].values else subject 
-                                                    for subject in available_subjects]
-                                    
-                                    # Show selection dropdown with subject IDs and group info
-                                    selected_subject_labels = st.multiselect(
-                                        "Select specific animals to display:",
-                                        subject_options,
-                                        default=[subject_options[0]] if subject_options else [],
-                                        key="subject_multiselect_with_group"
-                                    )
-                                    
-                                    # Extract just the subject ID from the labels
-                                    selected_subjects = [label.split(" (")[0] for label in selected_subject_labels]
-                                else:
-                                    # Show regular selection dropdown with just subject IDs
-                                    selected_subjects = st.multiselect(
-                                        "Select specific animals to display:",
-                                        available_subjects,
-                                        default=[available_subjects[0]] if available_subjects else [],
-                                        key="subject_multiselect"
-                                    )
-                                
-                                # Convert selected subjects to cages for filtering
-                                if selected_subjects:
-                                    selected_cages = [subject_to_cage[subject] for subject in selected_subjects]
-                                    
-                                    # Filter timeline data
-                                    timeline_data = timeline_data[timeline_data['cage'].isin(selected_cages)]
-                                    st.success(f"📊 Displaying data for {len(selected_subjects)} selected animals")
-                                else:
-                                    st.warning("⚠️ Please select at least one animal to display")
+                                # Get current light/dark times from session state
+                                ls = st.session_state.get('light_start', 7)
+                                le = st.session_state.get('light_end', 19)
+
+                                if selected_option == "Show Average Across All Animals":
+                                    st.markdown("### 📈 Average View")
+                                    # Use f-string to insert dynamic times into the description
+                                    st.markdown(f"""
+                                    **You're viewing the average of all animals with standard error bands.**
+
+                                    - Black line: Mean value across all animals
+                                    - Shaded area: Standard error of the mean (SEM)
+                                    - Gray regions: Dark cycle ({le:02d}:00 - {ls:02d}:00 based on your settings)
+                                    """)
+                                else:  # Focus on Individual Animals
+                                    st.markdown("### 👁️ Individual View")
+                                    # Use f-string to insert dynamic times into the description
+                                    st.markdown(f"""
+                                    **You're viewing individual animal traces.**
+
+                                        - Each line: A single selected animal
+                                        - Gray regions: Dark cycle ({le:02d}:00 - {ls:02d}:00 based on your settings)
+                                        """)
+
+                                    # Create a mapping from subject ID to cage
+                                    subject_to_cage = {}
+                                    # Ensure 'results' exists and has the required columns before iterating
+                                    if 'results' in locals() and results is not None and 'Subject ID' in results.columns:
+                                        for cage, subject in zip(results.index, results['Subject ID']):
+                                            subject_to_cage[subject] = cage
+                                    else:
+                                        st.warning("Cannot create subject mapping - results data missing.") # Add warning if results aren't ready
+
+                                    # Get list of available subjects (only if map was created)
+                                    available_subjects = list(subject_to_cage.keys()) if subject_to_cage else []
+
+                                    # Initialize selected_subjects before the conditional group check
+                                    selected_subjects = []
+
+                                    # Get any group information if available
+                                    if 'group_assignments' in st.session_state and not st.session_state['group_assignments'].empty and available_subjects:
+                                        group_df = st.session_state['group_assignments']
+                                        # Create options with group info if available
+                                        subject_options = [f"{subject} ({group_df[group_df['Subject ID']==subject]['Group'].iloc[0]})"
+                                                        if subject in group_df['Subject ID'].values else subject
+                                                        for subject in available_subjects]
+
+                                        # Show selection dropdown with subject IDs and group info
+                                        selected_subject_labels = st.multiselect(
+                                            "Select specific animals to display:",
+                                            subject_options,
+                                            # Ensure default is valid even if subject_options is empty
+                                            default=[subject_options[0]] if subject_options else [],
+                                            key="subject_multiselect_with_group"
+                                        )
+
+                                        # Extract just the subject ID from the labels
+                                        selected_subjects = [label.split(" (")[0] for label in selected_subject_labels]
+                                    elif available_subjects: # Only show this multiselect if there are subjects but no groups
+                                        # Show regular selection dropdown with just subject IDs
+                                        selected_subjects = st.multiselect(
+                                            "Select specific animals to display:",
+                                            available_subjects,
+                                                # Ensure default is valid even if available_subjects is empty
+                                            default=[available_subjects[0]] if available_subjects else [],
+                                            key="subject_multiselect"
+                                        )
+                                    else:
+                                        # If no subjects available (e.g., results data missing), don't show multiselect
+                                        st.warning("No subjects available for selection.")
+
+
+                                    # Convert selected subjects to cages for filtering
+                                    # Check if selected_subjects is not empty AND subject_to_cage map exists
+                                    if selected_subjects and subject_to_cage:
+                                        selected_cages = [subject_to_cage[subject] for subject in selected_subjects if subject in subject_to_cage] # Added check
+
+                                        # Ensure timeline_data exists before filtering
+                                        if 'timeline_data' in locals() and timeline_data is not None:
+                                                # Filter timeline data only if selected_cages is not empty
+                                                if selected_cages:
+                                                    timeline_data = timeline_data[timeline_data['cage'].isin(selected_cages)]
+                                                    st.success(f"📊 Displaying data for {len(selected_subjects)} selected animals")
+                                                else:
+                                                    st.warning("⚠️ Could not map selected subjects to cages.")
+                                        else:
+                                                st.warning("Timeline data not ready for filtering.")
+
+                                    elif not selected_subjects: # Explicitly handle case where no subjects are selected
+                                        st.warning("⚠️ Please select at least one animal to display")
                     
                     
                     # 1. METRICS - Display parameter-specific metrics at the top with improved layout
@@ -3204,18 +3391,26 @@ if uploaded_file is not None:
                 """)
 
                 # Check if data and groups are available from previous steps
-                # Note: 'results', 'raw_data' are assumed to be loaded if uploaded_file is not None
-                # This relies on the execution flow where process_clams_data runs first.
                 if uploaded_file is None or 'results' not in locals() or results is None or 'raw_data' not in locals() or raw_data is None:
                     st.warning("⚠️ Please upload data via the sidebar first.")
                 elif 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
                     st.warning("⚠️ Please assign groups in the 'Overview' tab first.")
                 else:
+                    # --- Define Helper Function (accessible to all plot types in this tab) ---
+                    def save_figure_to_buffer(fig, format):
+                        """Saves a matplotlib figure to an in-memory buffer."""
+                        buf = io.BytesIO()
+                        # Use bbox_inches='tight' to prevent labels/titles from being cut off
+                        # Use dpi=300 for good resolution in raster formats (like PNG)
+                        fig.savefig(buf, format=format, bbox_inches='tight', dpi=300)
+                        buf.seek(0) # Rewind buffer to the beginning
+                        return buf
+
                     # --- Plot Selection and Customization ---
                     st.markdown("---")
                     plot_type = st.radio(
                         "Select Plot Type:",
-                        ["Group Comparison Bar Chart", "24h Pattern"], # Added "24h Pattern"
+                        ["Group Comparison Bar Chart", "24h Pattern", "Timeline Plot"], # Added "Timeline Plot"
                         key="pub_plot_type",
                         horizontal=True # Make selection horizontal
                     )
@@ -3245,17 +3440,18 @@ if uploaded_file is not None:
                         # --- Data Preparation ---
                         group_assignments = st.session_state['group_assignments']
                         try:
-                            # Ensure normalization functions are available or applied if needed
+                            # Ensure necessary data normalization and merging occurs
+                            # (Assuming raw_data and group_assignments are prepared correctly based on earlier checks)
                             if 'normalized_cage_id' not in raw_data.columns:
                                 def normalize_cage_id(cage_str): import re; match = re.search(r'(\d+)', str(cage_str)); cage_num = match.group(1) if match else None; return ('1' + cage_num if len(cage_num) == 2 else cage_num) if cage_num else None
-                                raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id) # Apply directly here if needed
+                                raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id)
                             if 'normalized_cage_id' not in group_assignments.columns:
                                 if 'Cage' in group_assignments.columns: group_assignments.loc[:, 'normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
                                 else: st.error("Group assignments missing 'Cage' column."); st.stop()
 
                             if 'normalized_cage_id' in raw_data.columns and 'normalized_cage_id' in group_assignments.columns:
                                 grouped_data_pub = pd.merge(raw_data, group_assignments[['normalized_cage_id', 'Group', 'Subject ID']], on='normalized_cage_id', how='inner')
-                            else: st.error("Normalized cage ID missing. Cannot merge."); st.stop()
+                            else: st.error("Normalized cage ID missing."); st.stop()
                             if grouped_data_pub.empty: st.error("Merging resulted in empty data."); st.stop()
 
                             # Calculate group statistics based on selected cycle
@@ -3278,42 +3474,35 @@ if uploaded_file is not None:
 
                                 * **Bars**: The height of each bar represents the average value for all animals within that group.
                                 * **Error Bars**: The lines extending from the bars represent the **{error_bar_choice}** (Standard Error of the Mean or Standard Deviation).
-                                    * SEM indicates the precision of the group mean estimate.
-                                    * SD indicates the variability among the individual animals within the group.
                                 * **Calculation Basis**: These averages are calculated using the **{cycle_name_pub}** data for each animal within the selected time window (`{time_window}`).
                                 * **Styling**: The plot uses `scienceplots` for a publication-ready appearance.
                                 """)
 
                             # --- Downloads ---
                             st.markdown("---"); st.subheader("Download Plot")
-                            # (Buffer function assumed defined globally or imported if needed)
+                            # Call the globally defined helper function
                             png_buffer = save_figure_to_buffer(pub_fig_bar, 'png'); pdf_buffer = save_figure_to_buffer(pub_fig_bar, 'pdf'); svg_buffer = save_figure_to_buffer(pub_fig_bar, 'svg')
                             col1, col2, col3 = st.columns(3)
-                            dl_file_prefix = f"{parameter}_{cycle_name_pub.replace(' ', '_')}_bar" # Create filename prefix
+                            dl_file_prefix = f"{parameter}_{cycle_name_pub.replace(' ', '_')}_bar"
                             with col1: st.download_button(f"Download PNG", png_buffer, f"{dl_file_prefix}.png", "image/png", key="png_pub_bar")
                             with col2: st.download_button(f"Download PDF", pdf_buffer, f"{dl_file_prefix}.pdf", "application/pdf", key="pdf_pub_bar")
                             with col3: st.download_button(f"Download SVG", svg_buffer, f"{dl_file_prefix}.svg", "image/svg+xml", key="svg_pub_bar")
-                            plt.close(pub_fig_bar) # Close the figure
+                            plt.close(pub_fig_bar)
 
                         except Exception as e: st.error(f"Error during Bar Chart generation: {e}"); st.exception(e)
 
-                    # This 'elif' must be indented at the same level as the 'if' above it
                     elif plot_type == "24h Pattern":
                         # --- 24h Pattern Specific Code ---
                         st.subheader("24h Pattern Plot Options")
                         all_groups = sorted(st.session_state['group_assignments']['Group'].unique())
-                        selected_groups_pub = st.multiselect(
-                            "Select groups to display:", options=all_groups, default=all_groups[:min(4, len(all_groups))], key="pub_pattern_group_select"
-                        )
+                        selected_groups_pub = st.multiselect("Select groups to display:", options=all_groups, default=all_groups[:min(4, len(all_groups))], key="pub_pattern_group_select")
 
-                        if not selected_groups_pub:
-                            st.warning("Please select at least one group to display.")
-                            st.stop()
+                        if not selected_groups_pub: st.warning("Please select at least one group."); st.stop()
 
                         # --- Data Preparation ---
                         group_assignments = st.session_state['group_assignments']
                         try:
-                            # Ensure normalization is done if needed (copied logic for safety)
+                            # Ensure necessary data prep happened (copied logic for safety, consider refactoring)
                             if 'normalized_cage_id' not in raw_data.columns:
                                 def normalize_cage_id(cage_str): import re; match = re.search(r'(\d+)', str(cage_str)); cage_num = match.group(1) if match else None; return ('1' + cage_num if len(cage_num) == 2 else cage_num) if cage_num else None
                                 raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id)
@@ -3321,32 +3510,27 @@ if uploaded_file is not None:
                                 if 'Cage' in group_assignments.columns: group_assignments.loc[:, 'normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
                                 else: st.error("Group assignments missing 'Cage' column."); st.stop()
 
-                            # Merge data
                             if 'normalized_cage_id' in raw_data.columns and 'normalized_cage_id' in group_assignments.columns:
                                 grouped_data_pub = pd.merge(raw_data, group_assignments[['normalized_cage_id', 'Group', 'Subject ID']], on='normalized_cage_id', how='inner')
-                            else: st.error("Normalized cage ID missing. Cannot merge."); st.stop()
+                            else: st.error("Normalized cage ID missing."); st.stop()
 
-                            # Filter for selected groups
                             grouped_data_filtered = grouped_data_pub[grouped_data_pub['Group'].isin(selected_groups_pub)]
-                            if grouped_data_filtered.empty: st.warning("No data found for selected groups."); st.stop()
+                            if grouped_data_filtered.empty: st.warning("No data for selected groups."); st.stop()
 
                             # Calculate hourly stats
                             hourly_stats_list = []
                             for group in selected_groups_pub:
                                 group_hourly_data = grouped_data_filtered[grouped_data_filtered['Group'] == group]
                                 if not group_hourly_data.empty:
-                                    # Ensure 'hour' column exists (it should from process_clams_data)
-                                    if 'hour' not in group_hourly_data.columns:
-                                        st.error("'hour' column missing from prepared data. Cannot calculate hourly stats.")
-                                        st.stop()
+                                    if 'hour' not in group_hourly_data.columns: st.error("'hour' column missing."); st.stop()
                                     hourly_avg = group_hourly_data.groupby('hour')['value'].agg(['mean', 'sem']).reset_index()
                                     hourly_avg['Group'] = group
                                     hourly_stats_list.append(hourly_avg)
 
-                            if not hourly_stats_list: st.error("Could not calculate hourly statistics."); st.stop()
+                            if not hourly_stats_list: st.error("Could not calculate hourly stats."); st.stop()
                             hourly_df_pub = pd.concat(hourly_stats_list).reset_index(drop=True)
 
-                            # Ensure all hours 0-23 are present for each group
+                            # Reindex to ensure all hours 0-23 are present for every group
                             all_hours_index = pd.MultiIndex.from_product([selected_groups_pub, range(24)], names=['Group', 'hour'])
                             hourly_df_pub = hourly_df_pub.set_index(['Group', 'hour']).reindex(all_hours_index).reset_index()
 
@@ -3371,23 +3555,156 @@ if uploaded_file is not None:
 
                             # --- Downloads ---
                             st.markdown("---"); st.subheader("Download Plot")
-                            # (Buffer function assumed defined globally or imported)
+                            # Call the globally defined helper function
                             png_buffer_p = save_figure_to_buffer(pub_fig_pattern, 'png'); pdf_buffer_p = save_figure_to_buffer(pub_fig_pattern, 'pdf'); svg_buffer_p = save_figure_to_buffer(pub_fig_pattern, 'svg')
                             col1p, col2p, col3p = st.columns(3)
-                            dl_file_prefix_p = f"{parameter}_24h_pattern" # Create filename prefix
+                            dl_file_prefix_p = f"{parameter}_24h_pattern"
                             with col1p: st.download_button(f"Download PNG", png_buffer_p, f"{dl_file_prefix_p}.png", "image/png", key="png_pub_pattern")
                             with col2p: st.download_button(f"Download PDF", pdf_buffer_p, f"{dl_file_prefix_p}.pdf", "application/pdf", key="pdf_pub_pattern")
                             with col3p: st.download_button(f"Download SVG", svg_buffer_p, f"{dl_file_prefix_p}.svg", "image/svg+xml", key="svg_pub_pattern")
-                            plt.close(pub_fig_pattern) # Clear figure
-
+                            plt.close(pub_fig_pattern)
+                        
                         except Exception as e: st.error(f"Error during 24h Pattern plot generation: {e}"); st.exception(e)
+                    elif plot_type == "Timeline Plot":
+                            # --- Timeline Plot Specific Code ---
+                            st.subheader("Timeline Plot Options")
+                            timeline_display_mode = st.radio(
+                                "Display Mode:",
+                                ["Show Average Across All Animals", "Focus on Individual Animals"],
+                                key="pub_timeline_display_mode",
+                                horizontal=True
+                            )
 
+                            # --- Prepare Subject/Cage Mapping (Corrected) ---
+                            # Create map from Subject ID -> Positional Cage Name (e.g., "CAGE 01") using the 'results' DataFrame
+                            subject_to_positional_cage = {}
+                            if 'results' in locals() and results is not None and 'Subject ID' in results.columns:
+                                try:
+                                    # results.index should be the positional cage names ('CAGE 01', 'CAGE 02', ...)
+                                    subject_to_positional_cage = pd.Series(results.index.values, index=results['Subject ID']).to_dict()
+                                except Exception as e:
+                                    st.error(f"Error creating Subject ID to Positional Cage map from results: {e}")
+                                    # Provide info to debug if map fails
+                                    st.dataframe(results.head())
+
+                            if not subject_to_positional_cage:
+                                st.error("Failed to create Subject ID <-> Positional Cage mapping. Cannot plot individuals.")
+                                # Avoid stopping if Average mode is selected
+                                if timeline_display_mode != "Show Average Across All Animals":
+                                    st.stop()
+
+                            selected_subjects_pub_timeline = [] # Initialize
+                            group_assignments = st.session_state['group_assignments'] # Get assignments
+
+                            # --- Options for Individual Mode ---
+                            if timeline_display_mode == "Focus on Individual Animals":
+                                all_subjects_timeline = sorted(group_assignments['Subject ID'].unique())
+                                subject_options_timeline = [f"{subject} ({group_assignments[group_assignments['Subject ID']==subject]['Group'].iloc[0]})"
+                                                            if subject in group_assignments['Subject ID'].values else subject
+                                                            for subject in all_subjects_timeline]
+
+                                selected_subject_labels_timeline = st.multiselect(
+                                    "Select animals to display:",
+                                    options=subject_options_timeline,
+                                    default=subject_options_timeline[:min(1, len(subject_options_timeline))],
+                                    key="pub_timeline_subject_select"
+                                )
+                                selected_subjects_pub_timeline = [label.split(" (")[0] for label in selected_subject_labels_timeline]
+
+                                if not selected_subjects_pub_timeline:
+                                    st.warning("Please select at least one animal for individual view.")
+                                    st.stop()
+
+                            # --- Data Preparation ---
+                            try:
+                                if 'raw_data' not in locals() or raw_data is None: st.error("Raw data not available."); st.stop()
+
+                                # Ensure datetime column exists
+                                if 'datetime' not in raw_data.columns:
+                                    raw_data['datetime'] = pd.to_datetime(raw_data['timestamp'].dt.strftime('%Y-%m-%d %H:00:00'))
+
+                                timeline_plot_data = None # Initialize
+
+                                if timeline_display_mode == "Show Average Across All Animals":
+                                    # Calculate hourly mean and SEM robustly using named aggregation
+                                    timeline_summary = raw_data.groupby('datetime').agg(
+                                        Mean=('value', 'mean'),
+                                        SEM=('value', 'sem') # <--- PROBLEM LIKELY HERE
+                                    ).reset_index()
+                                    timeline_plot_data = timeline_summary # Data for plotting average
+
+                                else: # Individual mode
+                                    # Convert selected subjects to POSITIONAL cages using the corrected map
+                                    selected_cages_pub = [subject_to_positional_cage[sub] for sub in selected_subjects_pub_timeline if sub in subject_to_positional_cage]
+
+                                    if not selected_cages_pub:
+                                        st.warning(f"Could not map selected subjects to positional cages. Map: {subject_to_positional_cage}. Selected IDs: {selected_subjects_pub_timeline}")
+                                        st.stop()
+
+                                    # Filter raw_data for these POSITIONAL cages
+                                    timeline_plot_data = raw_data[raw_data['cage'].isin(selected_cages_pub)].copy()
+
+                                    if timeline_plot_data.empty:
+                                        st.warning(f"No raw data found for the selected positional cages: {selected_cages_pub}. Check if these cage names exist in the raw data.")
+                                        # Show available cage names from raw_data to help debug
+                                        st.write("Available cage names in raw data:", raw_data['cage'].unique())
+                                        st.stop()
+                                    if not all(col in timeline_plot_data.columns for col in ['datetime', 'cage', 'value']):
+                                        st.error("Required columns ('datetime', 'cage', 'value') missing in filtered data for individual plot.")
+                                        st.stop()
+
+                                # Final check before plotting
+                                if timeline_plot_data is None or timeline_plot_data.empty:
+                                    st.error("Failed to prepare data for timeline plot (final check)."); st.stop()
+
+                                # --- Generate and Display Plot ---
+                                # Determine the correct mode string based on the radio button selection
+                                mode_string = "Average" if timeline_display_mode == "Show Average Across All Animals" else "Individual"
+
+                                pub_fig_timeline = generate_pub_timeline_plot(
+                                    timeline_data=timeline_plot_data, # Pass the correct data structure
+                                    parameter=parameter,
+                                    time_window=time_window,
+                                    subject_to_cage=subject_to_positional_cage, # Pass the correct map
+                                    display_mode=mode_string, # <<< CORRECTED LINE
+                                    selected_subjects=selected_subjects_pub_timeline,
+                                    subject_to_group=pd.Series(group_assignments.Group.values,index=group_assignments['Subject ID']).to_dict(),
+                                    light_start=st.session_state.get('light_start', 7),
+                                    light_end=st.session_state.get('light_end', 19)
+                                )
+                                st.pyplot(pub_fig_timeline)
+                                
+                                # --- Description ---
+                                with st.expander("What am I looking at? (Calculation Details)"):
+                                    # (Description logic remains the same)
+                                    desc = f"""
+                                    This plot shows the **{parameter}** values over the selected time window (`{time_window}`).
+
+                                    * **Mode**: You are viewing the **{timeline_display_mode}**.
+                                    * **{'Average View Details' if timeline_display_mode == 'Show Average Across All Animals' else 'Individual View Details'}**:
+                                        * **{'Average:' if timeline_display_mode == 'Show Average Across All Animals' else 'Lines:'}** {'The solid black line represents the average value across all animals at each time point.' if timeline_display_mode == 'Show Average Across All Animals' else 'Each colored line represents the data for a single animal you selected.'}
+                                        * **{'Shaded Band (SEM):' if timeline_display_mode == 'Show Average Across All Animals' else ''}** {'The grey shaded area represents the Standard Error of the Mean (SEM), indicating the precision or variability of the average.' if timeline_display_mode == 'Show Average Across All Animals' else ''}
+                                    * **Calculation Basis**: The values are typically averaged per hour across the entire selected duration.
+                                    * **Background Shading**: Grey shaded areas indicate the **Dark Cycle** based on the start/end times set in the sidebar ({st.session_state.get('light_start', 7)}:00 to {st.session_state.get('light_end', 19)}:00 is Light).
+                                    * **Styling**: The plot uses `scienceplots` for a publication-ready appearance.
+                                    """
+                                    st.markdown(desc)
+
+                                # --- Downloads ---
+                                st.markdown("---"); st.subheader("Download Plot")
+                                # (Download button code remains the same)
+                                png_buffer_t = save_figure_to_buffer(pub_fig_timeline, 'png'); pdf_buffer_t = save_figure_to_buffer(pub_fig_timeline, 'pdf'); svg_buffer_t = save_figure_to_buffer(pub_fig_timeline, 'svg')
+                                col1t, col2t, col3t = st.columns(3)
+                                dl_file_prefix_t = f"{parameter}_timeline_{timeline_display_mode.split(' ')[0].lower().replace('focus','individual')}"
+                                with col1t: st.download_button(f"Download PNG", png_buffer_t, f"{dl_file_prefix_t}.png", "image/png", key="png_pub_timeline")
+                                with col2t: st.download_button(f"Download PDF", pdf_buffer_t, f"{dl_file_prefix_t}.pdf", "application/pdf", key="pdf_pub_timeline")
+                                with col3t: st.download_button(f"Download SVG", svg_buffer_t, f"{dl_file_prefix_t}.svg", "image/svg+xml", key="svg_pub_timeline")
+                                plt.close(pub_fig_timeline)
+
+                            except Exception as e: st.error(f"Error during Timeline plot generation: {e}"); st.exception(e)
                     # Add placeholders for other plot types later
                     # elif plot_type == "Timeline":
                     #     st.info("Timeline plot coming soon!")
-
-
-
             # Tab 3: Verification
             with tab3:
                 st.subheader("Raw Data Display")
