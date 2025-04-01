@@ -14,6 +14,8 @@ from scipy import stats
 from scikit_posthocs import posthoc_dunn
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.stats.power import TTestIndPower
+import statsmodels.api as sm
+from statsmodels.formula.api import ols
 
 
 # Page setup + title
@@ -967,744 +969,6 @@ def verify_file_type(file, expected_type):
                     mime="text/csv",
                     help="Download the results to verify calculations independently"
                 )
-def simplified_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window):
-    """Simplified, user-friendly statistical analysis with educational elements"""
-    with tab2:
-        # Create header with educational introduction
-        st.header("📈 Statistical Analysis")
-        
-        # Educational introduction section
-        with st.expander("🎓 Getting Started with Statistics", expanded=True):
-            edu_container = st.container()
-
-        with edu_container:
-            st.markdown("""
-            ## Welcome to CLAMSer Statistical Analysis
-            
-            This tab helps you understand differences between your experimental groups.
-            
-            ### 📘 Quick Guide:
-            1. **Assign groups** in the Overview tab
-            2. **Select analysis options** below
-            3. **Interpret results** with our easy-to-understand visualizations
-            
-            ### 📊 Understanding Your Results:
-            - **p-value < 0.05** suggests a statistically significant difference between groups
-            - **Error bars** show standard error of mean (SEM) by default
-            - **Bar charts** compare groups directly
-            - **Line graphs** show how values change over 24 hours
-            """)
-            
-            # Create two columns for basic stats concepts
-            st.markdown("### Statistical Concepts")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**❓ What is a p-value?**")
-                st.markdown("""
-                A **p-value** tells you how likely your results occurred by random chance.
-                
-                - **p < 0.05:** Strong evidence of a real difference (significant)
-                - **p > 0.05:** Not enough evidence (not significant)
-                
-                Think of it like this: A p-value of 0.03 means there's only a 3% chance that the difference you see is due to random chance.
-                """)
-                
-                st.markdown("**❓ What do error bars show?**")
-                st.markdown("""
-                **Error bars** represent the variability in your data.
-                
-                By default, we show **Standard Error of Mean (SEM)**, which indicates how precisely you know the true mean.
-                
-                Smaller error bars = more precise measurement
-                """)
-            
-            with col2:
-                st.markdown("**❓ How to interpret significance**")
-                st.markdown("""
-                Statistical significance (p < 0.05) suggests the difference between groups is real, not random variation.
-                
-                Look for:
-                - **Asterisks (*)** on graphs indicating significance
-                - **p-values** in the results tables
-                - **Non-overlapping error bars** often (but not always) indicate significant differences
-                """)
-                
-                # Get current light/dark times from session state again (or pass them into the function)
-                ls = st.session_state.get('light_start', 7)
-                le = st.session_state.get('light_end', 19)
-
-                st.markdown("**❓ What's the light/dark cycle?**")
-                st.markdown(f"""
-                Based on your settings:
-                - **Light cycle ({ls:02d}:00 - {le:02d}:00):** Typically the resting period for nocturnal rodents.
-                - **Dark cycle ({le:02d}:00 - {ls:02d}:00):** Typically the active period for nocturnal rodents.
-
-                Different parameters may show stronger differences during specific cycles.
-                """)
-
-        # Check if groups have been assigned
-        if 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
-            st.warning("⚠️ Please assign groups in the Overview tab first")
-            return
-            
-        # Get group assignments from session state
-        group_assignments = st.session_state['group_assignments']
-        
-        # Main Analysis Section
-        st.markdown("---")
-        st.subheader("Group Comparison")
-        
-        # Create a more distinct separation between settings and analysis info
-        st.markdown("### Settings")
-
-        # Get current light/dark times from session state
-        ls = st.session_state.get('light_start', 7)
-        le = st.session_state.get('light_end', 19)
-
-        # Cycle selection with visual indicators using dynamic labels
-        light_label = f"Light Cycle ({ls:02d}:00 - {le:02d}:00)"
-        dark_label = f"Dark Cycle ({le:02d}:00 - {ls:02d}:00)"
-
-        cycle_options = [light_label, dark_label, "24-hour Average"]
-        # Ensure the previously selected cycle index is preserved if labels change
-        current_cycle_index = st.session_state.get('simple_cycle_selector_index', 0)
-
-        # Select the cycle using radio button
-        cycle = st.radio(
-            "Select data to analyze:",
-            options=cycle_options,
-            index=current_cycle_index, # Set index to try and preserve selection
-            key="simple_cycle_selector", # Keep the key
-            help="Choose which part of the day to analyze"
-        )
-        # Store the selected index for next time
-        st.session_state['simple_cycle_selector_index'] = cycle_options.index(cycle)
-
-        # Convert cycle selection to filter (using the dynamic labels)
-        if cycle == light_label:
-                cycle_filter = True
-                cycle_name = "Light Cycle" # Keep generic name for internal use/titles
-        elif cycle == dark_label:
-                cycle_filter = False
-                cycle_name = "Dark Cycle" # Keep generic name
-        else: # 24-hour Average
-                cycle_filter = None
-                cycle_name = "24-hour Average"
-
-        # Group selection
-        available_groups = sorted(group_assignments['Group'].unique())
-        selected_groups = st.multiselect(
-            "Select groups to compare:",
-            options=available_groups,
-            default=available_groups[:min(4, len(available_groups))],
-            help="Choose which experimental groups to include in analysis"
-        )
-
-        # Error bar type with simpler options
-        error_bar_type = st.radio(
-            "Error bar type:",
-            ["Standard Error (SEM)", "Standard Deviation (SD)"],
-            index=0,
-            help="SEM shows precision of the mean, SD shows data spread"
-        )
-
-        # Add a visual separator
-        st.markdown("---")
-
-        # Analysis information in its own section
-        st.markdown("### Analysis Information")
-        st.markdown(f"""
-        You're analyzing **{parameter}** ({parameter_descriptions.get(parameter, '')}) 
-        for the selected groups during the **{cycle}**.
-
-        **What this tells you:**
-        - Differences in {parameter} between experimental groups
-        - Statistical significance of these differences
-        - Typical values for each group
-
-        **Tip:** 
-        For metabolic parameters (VO2, VCO2, HEAT), differences are often most 
-        pronounced during the dark cycle when animals are most active.
-        """)
-        
-        # Validate we have enough groups selected
-        if len(selected_groups) < 2:
-            st.warning("⚠️ Please select at least two groups to compare")
-            return
-            
-        # Prepare data for analysis
-        # Convert cycle selection to filter
-        if "Light Cycle" in cycle:
-            cycle_filter = True
-            cycle_name = "Light Cycle"
-        elif "Dark Cycle" in cycle:
-            cycle_filter = False
-            cycle_name = "Dark Cycle"
-        else:  # 24-hour Average
-            cycle_filter = None
-            cycle_name = "24-hour Average"
-        
-        # Join the datasets using the normalized IDs
-        # Create mapping function to handle the cage ID formats
-        def normalize_cage_id(cage_str):
-            # Extract just the numeric part
-            import re
-            match = re.search(r'(\d+)', str(cage_str))
-            if not match:
-                return None
-            
-            cage_num = match.group(1)
-            
-            # Special handling for 2-digit IDs
-            if len(cage_num) == 2:
-                # If it starts with '0', like '01', convert to '101'
-                if cage_num.startswith('0'):
-                    return '1' + cage_num
-                # If it's '10', '11', '12', convert to '110', '111', '112'
-                else:
-                    return '1' + cage_num
-            
-            # If it's already a 3-digit ID, keep it as is
-            return cage_num
-        
-        # Apply the normalization to raw_data
-        raw_data['normalized_cage_id'] = raw_data['cage'].apply(normalize_cage_id)
-        
-        # Apply the normalization to group_assignments (if not already done)
-        if 'normalized_cage_id' not in group_assignments.columns:
-            group_assignments['normalized_cage_id'] = group_assignments['Cage'].apply(normalize_cage_id)
-        
-        # Join the datasets
-        grouped_data = pd.merge(
-            raw_data, 
-            group_assignments[['normalized_cage_id', 'Group', 'Subject ID']], 
-            on='normalized_cage_id', 
-            how='inner'
-        )
-        
-        # Filter for selected groups
-        grouped_data = grouped_data[grouped_data['Group'].isin(selected_groups)]
-        
-        if len(grouped_data) == 0:
-            st.error("No data could be matched to your group assignments. Please check your group assignments and try again.")
-            return
-        
-        # Calculate group statistics based on cycle selection
-        if cycle_filter is not None:  # Light or Dark cycle
-            group_stats = grouped_data[grouped_data['is_light'] == cycle_filter].groupby(['Group', 'Subject ID'])['value'].agg([
-                ('Mean', 'mean')
-            ]).reset_index().groupby('Group').agg({
-                'Mean': ['mean', 'std', 'sem', 'count'],
-                'Subject ID': 'nunique'
-            })
-        else:  # 24-hour Average
-            group_stats = grouped_data.groupby(['Group', 'Subject ID'])['value'].agg([
-                ('Mean', 'mean')
-            ]).reset_index().groupby('Group').agg({
-                'Mean': ['mean', 'std', 'sem', 'count'],
-                'Subject ID': 'nunique'
-            })
-        
-        # Flatten the multi-index columns
-        group_stats.columns = ['_'.join(col).strip() for col in group_stats.columns.values]
-        group_stats = group_stats.reset_index()
-        
-        # Rename columns for clarity
-        group_stats = group_stats.rename(columns={
-            'Mean_mean': 'Mean',
-            'Mean_std': 'SD',
-            'Mean_sem': 'SEM',
-            'Mean_count': 'Data_Points',
-            'Subject ID_nunique': 'N'
-        })
-        
-        # Calculate 95% CI
-        from scipy import stats
-        
-        # Add 95% CI
-        group_stats['CI_95_Lower'] = group_stats['Mean'] - stats.t.ppf(0.975, group_stats['N']-1) * group_stats['SEM']
-        group_stats['CI_95_Upper'] = group_stats['Mean'] + stats.t.ppf(0.975, group_stats['N']-1) * group_stats['SEM']
-        
-        # Filter group_stats to only include selected groups (in the same order)
-        group_stats = group_stats[group_stats['Group'].isin(selected_groups)]
-        group_stats['Group'] = pd.Categorical(group_stats['Group'], categories=selected_groups, ordered=True)
-        group_stats = group_stats.sort_values('Group')
-        
-        # Calculate statistics and create visualizations
-        # ===============================================
-
-        # Create bar chart
-        st.subheader(f"{parameter} Comparison by Group ({cycle_name})")
-
-        # Create the bar chart
-        fig = go.Figure()
-
-        # Define colors for consistency
-        colors = ["#4285F4", "#EA4335", "#FBBC05", "#34A853", "#8A2BE2", "#FF7F00", "#FF69B4", "#1E90FF"]
-
-        # Determine error bar values based on user selection
-        if "Standard Error" in error_bar_type:
-            error_values = group_stats['SEM'].values
-            error_title = "Standard Error of Mean"
-        else:  # Standard Deviation
-            error_values = group_stats['SD'].values
-            error_title = "Standard Deviation"
-
-        # Add bars for each group
-        for i, row in enumerate(group_stats.itertuples()):
-            color = colors[i % len(colors)]
-            
-            # Get error value for this row
-            error_val = error_values[i]
-            
-            # Add the bar
-            fig.add_trace(go.Bar(
-                x=[row.Group],
-                y=[row.Mean],
-                name=row.Group,
-                marker_color=color,
-                error_y=dict(
-                    type='data',
-                    array=[error_val],
-                    visible=True
-                ),
-                width=0.6,
-                hovertemplate=f"<b>{row.Group}</b><br>Mean: %{{y:.2f}}<br>N: {row.N}<br>{error_title}: {error_val:.2f}<extra></extra>"
-            ))
-
-        # Run appropriate statistical test
-        p_value = None
-        test_name = None
-        test_stat = None
-
-        if len(selected_groups) == 2:  # t-test for 2 groups
-            group1, group2 = selected_groups[0], selected_groups[1]
-            
-            # Get data for both groups
-            if cycle_filter is None:  # 24-hour average
-                g1_data = grouped_data[grouped_data['Group'] == group1].groupby('Subject ID')['value'].mean()
-                g2_data = grouped_data[grouped_data['Group'] == group2].groupby('Subject ID')['value'].mean()
-            else:
-                g1_data = grouped_data[(grouped_data['Group'] == group1) & 
-                                    (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean()
-                g2_data = grouped_data[(grouped_data['Group'] == group2) & 
-                                    (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean()
-            
-            # Perform t-test if enough data
-            if len(g1_data) > 1 and len(g2_data) > 1:
-                t_stat, p_value = stats.ttest_ind(g1_data, g2_data, equal_var=False)
-                test_stat = t_stat
-                test_name = "t-test"
-
-        elif len(selected_groups) > 2:  # ANOVA for 3+ groups
-            # Prepare data for ANOVA
-            anova_data = []
-            
-            for group in selected_groups:
-                if cycle_filter is None:  # 24-hour average
-                    group_values = grouped_data[grouped_data['Group'] == group].groupby('Subject ID')['value'].mean().values
-                else:
-                    group_values = grouped_data[(grouped_data['Group'] == group) & 
-                                            (grouped_data['is_light'] == cycle_filter)].groupby('Subject ID')['value'].mean().values
-                
-                if len(group_values) > 0:
-                    anova_data.append(group_values)
-            
-            # Run ANOVA if we have data for all groups
-            if all(len(data) > 0 for data in anova_data):
-                f_stat, p_value = stats.f_oneway(*anova_data)
-                test_stat = f_stat
-                test_name = "ANOVA"
-
-        # Add annotation about statistical significance
-        if p_value is not None:
-            significance = ""
-            if p_value < 0.001:
-                significance = "***"
-            elif p_value < 0.01:
-                significance = "**"
-            elif p_value < 0.05:
-                significance = "*"
-            
-            if test_name == "t-test":
-                fig.add_annotation(
-                    x=0.5,
-                    y=1.1,
-                    xref="paper",
-                    yref="paper",
-                    text=f"t-test: t={test_stat:.2f}, p={p_value:.4f} {significance}",
-                    showarrow=False,
-                    font=dict(size=14)
-                )
-            else:  # ANOVA
-                fig.add_annotation(
-                    x=0.5,
-                    y=1.1,
-                    xref="paper",
-                    yref="paper",
-                    text=f"ANOVA: F={test_stat:.2f}, p={p_value:.4f} {significance}",
-                    showarrow=False,
-                    font=dict(size=14)
-                )
-            
-            # Add significance bars for t-test
-            if test_name == "t-test" and p_value < 0.05:
-                # Get y-range for positioning significance bars
-                y_max = max(group_stats['Mean']) * 1.1
-                y_range = y_max - min(group_stats['Mean'])
-                
-                # Add significance bar
-                fig.add_shape(
-                    type="line",
-                    x0=0,
-                    y0=y_max + 0.05 * y_range,
-                    x1=1,
-                    y1=y_max + 0.05 * y_range,
-                    line=dict(color="black", width=2)
-                )
-                
-                # Add asterisk
-                fig.add_annotation(
-                    x=0.5,
-                    y=y_max + 0.1 * y_range,
-                    text=significance,
-                    showarrow=False,
-                    font=dict(size=20)
-                )
-
-        # Update layout
-        fig.update_layout(
-            xaxis_title="Group",
-            yaxis_title=f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})",
-            showlegend=False,
-            height=500,
-            margin=dict(t=100)  # Make room for annotations
-        )
-
-        # Set y-axis range with headroom for significance bars
-        y_max = max(group_stats['Mean']) * 1.3
-        fig.update_yaxes(range=[0, y_max])
-
-        # Display plot
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Add more visible significance indicator
-        if p_value is not None:
-            result_box = st.container()
-            with result_box:
-                if p_value < 0.05:
-                    st.success(f"### ✅ Statistically Significant Difference Detected\n**p-value = {p_value:.4f}**\n\nThere is strong evidence that the groups differ.")
-                else:
-                    st.info(f"### ℹ️ No Statistically Significant Difference\n**p-value = {p_value:.4f}**\n\nThere isn't enough evidence to conclude the groups differ.")
-            
-            with st.expander("How is this p-value calculated?"):
-                st.markdown(f"""
-                The p-value is calculated using:
-                
-                - **{test_name}**: {test_name == 't-test' and "Comparing means between two groups" or "Comparing means across multiple groups"}
-                - Based on data from the **{cycle_name}**
-                - Specifically, we used {test_name == 't-test' and "Welch's t-test (does not assume equal variances)" or "one-way ANOVA"}
-                
-                The p-value will change if you select different cycles (light vs. dark) because the statistical test 
-                is performed on different subsets of your data. For example, metabolic parameters often show stronger 
-                differences during dark cycle when animals are more active.
-                """)
-            
-            st.markdown("")  # Add some space
-
-        # Make bar chart explanation collapsible
-        with st.expander("What this bar chart shows"):
-            st.markdown(f"""
-            ### Understanding the Bar Chart
-            
-            **The Bar Chart**: 
-            - Each bar represents the **average {parameter} value** for all animals in that experimental group
-            - Values are calculated from the {cycle_name.lower()} data
-            - For each animal, we first calculate its individual mean, then average these means for the group
-            - **Error bars** show {'the standard error of the mean (SEM)' if 'Standard Error' in error_bar_type else 'the standard deviation (SD)'}, indicating the precision of our measurement
-            """)
-
-        with st.expander("See details about the calculation"):
-            st.markdown(f"""
-            For example, if "{selected_groups[0]}" has 3 animals with individual averages of 95, 100, and 105:
-            
-            1. Group Mean = (95 + 100 + 105) ÷ 3 = 100
-            2. Standard Deviation = 5
-            3. SEM = 5 ÷ √3 = 2.89
-            
-            The bar height would be 100, with error bars extending ±2.89 if using SEM.
-            """)
-
-        # Move Group Statistics here instead of in a side column
-        st.subheader("Group Statistics")
-
-        # Format table for better readability
-        display_stats = group_stats[['Group', 'N', 'Mean', 'SD', 'SEM']].copy()
-        display_stats['Mean'] = display_stats['Mean'].round(2)
-        display_stats['SD'] = display_stats['SD'].round(2)
-        display_stats['SEM'] = display_stats['SEM'].round(2)
-
-        # Display a cleaner subset of columns
-        st.dataframe(display_stats, use_container_width=True)
-
-        # Add explanation of the statistics
-        with st.expander("📊 What these statistics mean"):
-            st.markdown("""
-            - **N**: Number of animals in each group
-            - **Mean**: Average value for each group
-            - **SD**: Standard Deviation (spread of individual values)
-            - **SEM**: Standard Error of the Mean (precision of the average)
-            """)
-        
-        # Time Pattern Analysis Section
-        # ===============================
-        
-        st.markdown("---")
-        st.subheader("24-Hour Pattern Analysis")
-        
-        st.markdown("""
-        This analysis shows how your parameter changes over the 24-hour cycle.
-        Dark regions indicate dark cycle (7PM-7AM), light regions indicate light cycle (7AM-7PM).
-        """)
-        
-        # Group selection
-        time_pattern_groups = st.multiselect(
-            "Select groups to display:",
-            options=selected_groups,
-            default=selected_groups[:min(3, len(selected_groups))],
-            key="time_pattern_group_select"
-        )
-        
-        if not time_pattern_groups:
-            st.warning("Please select at least one group to display the time pattern")
-        else:
-            # Calculate hourly averages for each group
-            hourly_data = []
-            
-            for group in time_pattern_groups:
-                # Get cages for this group
-                group_cages = group_assignments[group_assignments['Group'] == group]['normalized_cage_id'].unique()
-                
-                # Filter data for these cages
-                group_data = grouped_data[grouped_data['Group'] == group].copy()
-                
-                # Calculate hourly averages
-                hourly_avg = group_data.groupby('hour')['value'].agg(['mean', 'sem']).reset_index()
-                hourly_avg['Group'] = group
-                hourly_data.append(hourly_avg)
-            
-            if hourly_data:
-                # Combine all groups
-                hourly_df = pd.concat(hourly_data)
-                
-                # Create time series plot
-                fig = go.Figure()
-                
-                # Color palette
-                colors = ["#4285F4", "#EA4335", "#FBBC05", "#34A853", "#8A2BE2", "#FF7F00", "#FF69B4", "#1E90FF"]
-                
-                # Add line for each group
-                for i, group in enumerate(time_pattern_groups):
-                    group_hourly = hourly_df[hourly_df['Group'] == group]
-                    color = colors[i % len(colors)]
-                    
-                    # Add main line
-                    fig.add_trace(go.Scatter(
-                        x=group_hourly['hour'],
-                        y=group_hourly['mean'],
-                        mode='lines+markers',
-                        name=group,
-                        line=dict(color=color, width=3),
-                        marker=dict(size=8)
-                    ))
-                    
-                    # Add error bands (SEM)
-                    fig.add_trace(go.Scatter(
-                        x=group_hourly['hour'].tolist() + group_hourly['hour'].tolist()[::-1],
-                        y=(group_hourly['mean'] + group_hourly['sem']).tolist() + 
-                           (group_hourly['mean'] - group_hourly['sem']).tolist()[::-1],
-                        fill='toself',
-                        fillcolor=color.replace(')', ', 0.2)').replace('rgb', 'rgba'),
-                        line=dict(color='rgba(0,0,0,0)'),
-                        hoverinfo='skip',
-                        showlegend=False
-                    ))
-                
-                # Get custom light/dark cycle times from session state
-                light_start = st.session_state.get('light_start', 7)  # Default to 7AM if not set
-                light_end = st.session_state.get('light_end', 19)     # Default to 7PM if not set
-                
-                # Add shaded regions for dark and light cycles - with higher opacity
-                for hour in range(0, 24):
-                    if hour < light_start or hour >= light_end:  # Dark cycle 
-                        fig.add_vrect(
-                            x0=hour - 0.5,
-                            x1=hour + 0.5,
-                            fillcolor="rgba(0,0,0,0.25)",  # Increased opacity for dark cycle
-                            layer="below",
-                            line_width=0,
-                        )
-                    else:  # Light cycle
-                        fig.add_vrect(
-                            x0=hour - 0.5,
-                            x1=hour + 0.5,
-                            fillcolor="rgba(255,255,0,0.15)",  # Increased opacity for light cycle
-                            layer="below",
-                            line_width=0,
-                        )
-                
-                # Calculate good positions for the annotations based on cycle times
-                dark_morning_center = max(light_start // 2, 3)  # Center of morning dark period
-                light_center = (light_start + light_end) // 2   # Center of light period
-                dark_evening_center = min(light_end + (24 - light_end) // 2, 21)  # Center of evening dark period
-                
-                # Add more prominent cycle labels
-                fig.add_annotation(
-                    x=dark_morning_center, y=1.12,  # Positioned in first dark cycle
-                    xref="x", yref="paper",
-                    text="Dark Cycle",
-                    showarrow=False,
-                    font=dict(size=16, color="white", family="Arial Black"),
-                    bgcolor="rgba(0,0,0,0.7)",  # Much darker background
-                    bordercolor="white",
-                    borderwidth=2,
-                    borderpad=4
-                )
-
-                fig.add_annotation(
-                    x=light_center, y=1.12,  # Positioned in light cycle
-                    xref="x", yref="paper",
-                    text="Light Cycle",
-                    showarrow=False,
-                    font=dict(size=16, color="black", family="Arial Black"),
-                    bgcolor="rgba(255,255,0,0.6)",  # Much more visible yellow
-                    bordercolor="black",
-                    borderwidth=2,
-                    borderpad=4
-                )
-
-                fig.add_annotation(
-                    x=dark_evening_center, y=1.12,  # Positioned in second dark cycle
-                    xref="x", yref="paper",
-                    text="Dark Cycle",
-                    showarrow=False,
-                    font=dict(size=16, color="white", family="Arial Black"),
-                    bgcolor="rgba(0,0,0,0.7)",  # Much darker background
-                    bordercolor="white",
-                    borderwidth=2,
-                    borderpad=4
-                )
-                
-                # Update layout
-                fig.update_layout(
-                    title=f"{parameter} 24-Hour Pattern",
-                    xaxis_title="Hour of Day",
-                    yaxis_title=f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})",
-                    xaxis=dict(
-                        tickmode='array',
-                        tickvals=list(range(0, 24, 2)),
-                        ticktext=[f"{h:02d}:00" for h in range(0, 24, 2)]
-                    ),
-                    height=500,
-                    legend_title="Group",
-                    hovermode="x unified"
-                )
-                
-                # Display the plot
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Make time graph explanation collapsible
-                with st.expander("What this 24-hour pattern graph shows"):
-                    st.markdown(f"""
-                    ### Understanding the 24-Hour Pattern Graph
-                    
-                    **The 24-Hour Pattern Graph**:
-                    - This graph shows a "typical day" created by averaging across all days in your selected time window ("{time_window}")
-                    - Each point represents the **average {parameter} value** for a specific hour of the day
-                    - Hours are shown from 0 (12 AM midnight) to 23 (11 PM)
-                    - **Important**: If you selected "{time_window}", data from all {time_window.lower().replace("last ", "")} are combined and averaged for each hour
-                    - For example, all measurements taken at 8:00 AM across {time_window.lower().replace("last ", "")} are averaged into a single data point
-                    - **Shaded bands** around the lines show the standard error (SEM)
-                    - **Background colors** indicate light cycle (yellow) and dark cycle (gray)
-                    
-                    This graph helps you identify:
-                    - Consistent circadian patterns in your data
-                    - When your parameter peaks and falls during a typical day
-                    - How the light/dark cycle affects your parameter
-                    - Differences in daily rhythms between experimental groups
-                    
-                    **Note**: This graph does not show how patterns changed from day to day. It creates a single "typical day" profile by combining all days.
-                    """)
-
-                with st.expander("See details about hourly calculation"):
-                    st.markdown(f"""
-                    For example, for the 8 AM data point (hour 8):
-                    
-                    1. All measurements taken at 8:00-8:59 AM across all days are collected
-                    2. These values are averaged to get the mean for hour 8
-                    3. The standard error is calculated to show precision
-                    4. This process is repeated for each hour (0-23)
-                    
-                    This creates a complete 24-hour profile of how your parameter changes throughout the day.
-                    """)
-        
-        # Export Section with better explanations
-        st.markdown("---")
-        st.subheader("Export Results")
-
-        st.markdown("""
-        Download your analysis results for use in other programs like Excel, GraphPad Prism, or R.
-        These CSV files can be directly imported into most analysis software.
-        """)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            # Statistics export
-            if not group_stats.empty:
-                csv_stats = group_stats.to_csv().encode('utf-8')
-                st.download_button(
-                    label="📥 Download Statistics (CSV)",
-                    data=csv_stats,
-                    file_name=f"{parameter}_statistics.csv",
-                    mime="text/csv",
-                    help="Download complete statistical results for further analysis"
-                )
-                
-                st.markdown("""
-                **The Statistics CSV contains:**
-                - Group names
-                - Number of animals (N)
-                - Mean values for each group
-                - Standard deviation (SD)
-                - Standard error of mean (SEM)
-                - 95% Confidence intervals
-                
-                For creating your own custom graphs 
-                """)
-
-        with col2:
-            # Time pattern export
-            if 'hourly_df' in locals() and not hourly_df.empty:
-                csv_hourly = hourly_df.to_csv().encode('utf-8')
-                st.download_button(
-                    label="📥 Download 24h Pattern Data (CSV)",
-                    data=csv_hourly,
-                    file_name=f"{parameter}_24h_pattern.csv",
-                    mime="text/csv",
-                    help="Download hourly averages for each group"
-                )
-                
-                st.markdown("""
-                **The 24h Pattern CSV contains:**
-                - Hour of day (0-23)
-                - Mean value for each hour
-                - Standard error (SEM) for each hour
-                - Group identifier
-                
-                For creating custom time-course graphs or performing additional temporal analysis.
-                """)
 
 def extract_cage_info(file):
     """Extract cage information from file header"""
@@ -2004,11 +1268,28 @@ def assign_groups(cage_df, key_prefix=''):
         for group_name, cages in group_assignments.items():
             for cage in cages:
                 subject_id = cage_df[cage_df["Cage"] == cage]["Subject ID"].iloc[0]
-                group_summary.append({
-                    "Group": group_name,
-                    "Cage": cage,
-                    "Subject ID": subject_id
-                })
+            # --- Convert cage format for consistency ---
+            try:
+                # Extract number (e.g., '101'), subtract 100, format as 2 digits ('01')
+                cage_num_match = re.search(r'(\d+)$', str(cage)) # Find digits at the end
+                if cage_num_match:
+                    formatted_cage_num = int(cage_num_match.group(1)) - 100
+                    consistent_cage_name = f"CAGE {formatted_cage_num:02d}"
+                else:
+                    # Fallback if format is unexpected, use original but warn
+                    st.warning(f"Unexpected cage format '{cage}' in assign_groups. Using original.")
+                    consistent_cage_name = cage
+            except Exception as e:
+                 # Fallback on error
+                 st.warning(f"Error formatting cage '{cage}' in assign_groups: {e}. Using original.")
+                 consistent_cage_name = cage
+
+            group_summary.append({
+                "Group": group_name,
+                "Cage": consistent_cage_name, # <--- Use the consistently formatted name
+                "Subject ID": subject_id
+            })
+            # --- End conversion ---
                 
         # Make sure we have at least one row before creating the DataFrame
         if not group_summary:
@@ -3051,10 +2332,246 @@ if uploaded_file is not None:
     
             # Tab 2: Statistical Analysis
             with tab2:
-                if uploaded_file is not None and raw_data is not None and results is not None:
-                    simplified_statistical_analysis(tab2, raw_data, results, parameter, parameter_descriptions, time_window)
+                st.header("📈 Statistical Analysis")
+
+                # --- Prerequisite Check ---
+                if uploaded_file is None or 'raw_data' not in locals() or raw_data is None or 'results' not in locals() or results is None:
+                    st.warning("⚠️ Please upload data in the 'Overview' tab first.")
+                elif 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
+                    st.warning("⚠️ Please assign groups in the 'Overview' tab first to perform statistical analysis.")
                 else:
-                    st.warning("Please upload data in the Overview tab first")
+                    # --- Groups are assigned, proceed with analysis UI ---
+                    st.success("Data and groups loaded. Ready for analysis.") # Placeholder confirmation
+
+                    # --- Educational Expander ---
+                    with st.expander("🎓 Understanding the Analysis (Two-Way ANOVA)", expanded=False):
+                        st.markdown("""
+                        This section performs a **Two-Way Analysis of Variance (ANOVA)** to understand how your selected **Groups** and the **Light/Dark Cycle** influence the chosen parameter.
+
+                        **Key Questions Answered:**
+                        *   **Main Effect of Group:** Is there an overall significant difference between the groups, averaging across both light and dark cycles?
+                        *   **Main Effect of Cycle:** Is there an overall significant difference between the light and dark cycles, averaging across all selected groups?
+                        *   **Interaction Effect (Group x Cycle):** Does the effect of being in a certain group *depend* on whether it's the light or dark cycle? (e.g., Does Treatment A lower VO2 *only* during the dark cycle?) This is often the most interesting finding.
+
+                        **How it Works:**
+                        1.  The average value for each animal during the *light* cycle and the *dark* cycle is calculated.
+                        2.  These individual light/dark means are used as data points in the Two-Way ANOVA model.
+                        3.  The ANOVA test calculates p-values for the main effects and the interaction.
+
+                        **Interpreting Results:**
+                        *   Look at the **ANOVA Table** for p-values (< 0.05 usually indicates significance).
+                        *   Examine the **Interaction Plot** to visualize how group averages change between light and dark cycles. Crossing or non-parallel lines often suggest an interaction.
+                        *   Use **Post-Hoc Tests** (if effects are significant) to find out *which specific* groups or conditions differ significantly from each other.
+                        """)
+
+                    st.markdown("---") # Separator
+
+                    # --- Analysis Setup: Group Selection ---
+                    st.subheader("Analysis Setup")
+
+                    # Get available groups from session state
+                    group_assignments_df = st.session_state['group_assignments']
+                    available_groups_stat = sorted(group_assignments_df['Group'].unique())
+
+                    # Let user select which groups to include in THIS analysis
+                    selected_groups_stat = st.multiselect(
+                        "Select groups to include in the Two-Way ANOVA:",
+                        options=available_groups_stat,
+                        default=available_groups_stat, # Default to all assigned groups
+                        key="stat_anova_group_select",
+                        help="Choose 2 or more groups for comparison."
+                    )
+
+                    # --- Validation: Need at least 2 groups ---
+                    if len(selected_groups_stat) < 2:
+                        st.warning("⚠️ Please select at least two groups to perform the ANOVA.")
+                        st.stop() # Stop execution in this tab if not enough groups are selected
+
+                    # --- Data Preparation for Two-Way ANOVA ---
+                    st.markdown("---") # Separator before data prep/results
+                    st.subheader("Two-Way ANOVA: Group x Light/Dark Cycle")
+
+                    try:
+                        # 1. Filter Raw Data: Select only the data for the chosen groups
+                        #    Use the 'raw_data' DataFrame loaded earlier.
+                        #    Ensure 'Group' column exists from merging in simplified_statistical_analysis (or redo merge if needed)
+
+                        # Let's re-merge here to be safe and ensure we have the 'Group' column associated with raw_data points
+                        # We need: raw_data (timestamp, value, cage, is_light) and group_assignments_df (Subject ID, Group, Cage)
+                        # We need a common key. Let's assume raw_data has 'cage' (e.g., 'CAGE 01')
+                        # and group_assignments_df has 'Cage' and 'Subject ID'. Let's use 'Cage'.
+
+                        # Ensure group_assignments_df has the correct 'Cage' column format if needed
+                        # Example: If raw_data uses 'CAGE 01' and assign_groups stored '1', adjust one of them.
+                        # Assuming process_clams_data consistently produces 'CAGE XX' format in raw_data['cage']
+                        # Assuming assign_groups produces 'CAGE XX' format in group_assignments_df['Cage']
+
+                        # Merge raw data with group assignments
+                        # Use left merge to keep all raw_data rows and add Group info
+                        # Handle potential errors if merge keys don't match perfectly
+                        if 'cage' not in raw_data.columns:
+                            st.error("Critical Error: 'cage' column missing in raw_data.")
+                            st.stop()
+                        if 'Cage' not in group_assignments_df.columns:
+                            st.error("Critical Error: 'Cage' column missing in group_assignments_df.")
+                            st.stop()
+                        if 'Subject ID' not in group_assignments_df.columns:
+                            st.error("Critical Error: 'Subject ID' column missing in group_assignments_df.")
+                            st.stop()
+
+
+                        # Perform the merge
+                        # We need 'Subject ID' associated with each raw data point for later grouping
+                        analysis_data = pd.merge(
+                            raw_data,
+                            group_assignments_df[['Cage', 'Group', 'Subject ID']], # Select necessary columns
+                            left_on='cage', # Column name in raw_data
+                            right_on='Cage', # Column name in group_assignments_df
+                            how='inner' # Use 'inner' to keep only rows with matching cages in both dfs
+                        )
+
+                        if analysis_data.empty:
+                            st.error("Data merging failed. No matching cages found between raw data and group assignments. Check formats.")
+                            st.write("Raw data cages sample:", raw_data['cage'].unique()[:5])
+                            st.write("Group assignment cages sample:", group_assignments_df['Cage'].unique()[:5])
+                            st.stop()
+
+                        # Filter for the groups selected by the user in the multiselect
+                        analysis_data_filtered = analysis_data[analysis_data['Group'].isin(selected_groups_stat)].copy()
+
+                        if analysis_data_filtered.empty:
+                            st.warning(f"No data found for the selected groups: {', '.join(selected_groups_stat)}. Cannot perform ANOVA.")
+                            st.stop()
+
+                        # 2. Calculate Mean per Animal per Cycle:
+                        #    Group by 'Subject ID' and 'is_light', then calculate the mean 'value'.
+                        anova_input_df = analysis_data_filtered.groupby(['Subject ID', 'Group', 'is_light'])['value'].mean().reset_index()
+                        # Check for and handle potential NaN values in 'Mean Value'
+                        if anova_input_df['Mean Value'].isnull().any():
+                            st.warning("⚠️ Some animals had missing mean values for Light or Dark cycle (likely due to no data points in that cycle). These animals/cycles will be excluded from the ANOVA.", icon="📉")
+                            # Display rows with NaN before dropping (for debugging/info)
+                            st.dataframe(anova_input_df[anova_input_df['Mean Value'].isnull()])
+                            # Drop rows with NaN in 'Mean Value'
+                            anova_input_df_clean = anova_input_df.dropna(subset=['Mean Value']).copy()
+                        else:
+                            anova_input_df_clean = anova_input_df.copy() # Use the original df if no NaNs
+
+                        # --- Re-check if enough data remains after dropping NaNs ---
+                        if anova_input_df_clean.empty:
+                            st.error("No valid data remaining after removing missing values. Cannot perform ANOVA.")
+                            st.stop()
+                        # Check if each group/cycle combo still has data (more robust check)
+                        min_n_per_cell = anova_input_df_clean.groupby(['Group', 'Cycle'])['Subject ID'].nunique().min()
+                        if min_n_per_cell < 1: # Need at least one observation per cell for 2-way ANOVA
+                            st.error("Some Group/Cycle combinations have zero animals after removing missing values. Cannot perform standard Two-Way ANOVA.")
+                            st.dataframe(anova_input_df_clean.groupby(['Group', 'Cycle'])['Subject ID'].nunique())
+                            st.stop()
+                        # Optional: Check for sufficient N for reliable ANOVA (e.g., >= 3 per cell)
+                        if min_n_per_cell < 3:
+                            st.warning(f"Low sample size (N={min_n_per_cell}) in at least one Group/Cycle combination. ANOVA results may be less reliable.", icon="🔬")
+
+                        # Rename 'is_light' (True/False) to a more readable 'Cycle' ('Light'/'Dark')
+                        anova_input_df['Cycle'] = anova_input_df['is_light'].map({True: 'Light', False: 'Dark'})
+
+                        # Rename 'value' column to 'Mean Value' for clarity
+                        anova_input_df = anova_input_df.rename(columns={'value': 'Mean Value'})
+
+                        # Select and reorder final columns for the ANOVA input table
+                        anova_input_df = anova_input_df[['Subject ID', 'Group', 'Cycle', 'Mean Value']]
+
+                        if anova_input_df.empty or anova_input_df['Mean Value'].isnull().any():
+                            st.error("Failed to calculate mean values per animal per cycle. Check raw data.")
+                            st.dataframe(anova_input_df.head()) # Show head to help debug
+                            st.stop()
+
+
+                        # 3. Display Data Summary (Optional but good practice): Show N per condition
+                        st.markdown("##### Data Summary (N per Condition)")
+                        # Pivot table to show counts easily
+                        n_table = pd.pivot_table(anova_input_df, values='Subject ID', index='Group', columns='Cycle', aggfunc='nunique')
+                        st.dataframe(n_table.fillna(0).astype(int)) # Fill missing combos with 0
+                        if n_table.isnull().any().any():
+                            st.warning("Note: Some Group/Cycle combinations have no animals after filtering.", icon="⚠️")
+
+
+                        # --- Fit Two-Way ANOVA Model ---
+                        # Define the model formula: Mean Value depends on Group, Cycle, and their interaction
+                        # C(...) treats the variable as Categorical
+                        formula = 'Q("Mean Value") ~ C(Group) + C(Cycle) + C(Group):C(Cycle)'
+
+                        # Fit the model using Ordinary Least Squares (OLS)
+                        model = ols(formula, data=anova_input_df_clean).fit()
+
+                        # Get the ANOVA table
+                        anova_table = sm.stats.anova_lm(model, typ=2) # Type 2 ANOVA is generally recommended
+
+                        # --- Display ANOVA Results ---
+                        st.markdown("##### ANOVA Results Table")
+
+                        # Enhance display: Add significance stars
+                        def add_p_value_stars(p_value):
+                            if p_value < 0.001: return "***"
+                            elif p_value < 0.01: return "**"
+                            elif p_value < 0.05: return "*"
+                            else: return ""
+
+                        # Apply formatting to the table for display
+                        display_anova = anova_table.copy() # Work on a copy
+                        # Format p-values
+                        if 'PR(>F)' in display_anova.columns:
+                            display_anova['P-Value'] = display_anova['PR(>F)'].map('{:.4f}'.format)
+                            display_anova['Sig.'] = display_anova['PR(>F)'].apply(add_p_value_stars)
+                            display_anova = display_anova.drop(columns=['PR(>F)']) # Drop original p-value column
+
+                        # Format other columns (optional, but nice)
+                        for col in ['sum_sq', 'mean_sq', 'F']:
+                            if col in display_anova.columns:
+                                display_anova[col] = display_anova[col].map('{:.3f}'.format)
+
+                        # Reorder columns for better readability
+                        cols_order = [col for col in ['sum_sq', 'df', 'mean_sq', 'F', 'P-Value', 'Sig.'] if col in display_anova.columns]
+                        display_anova = display_anova[cols_order]
+
+                        st.dataframe(display_anova)
+
+                        # --- Interpretation Helper ---
+                        st.markdown("##### Interpretation")
+                        interaction_p = anova_table.loc['C(Group):C(Cycle)', 'PR(>F)'] if 'C(Group):C(Cycle)' in anova_table.index else 1.0
+                        group_p = anova_table.loc['C(Group)', 'PR(>F)'] if 'C(Group)' in anova_table.index else 1.0
+                        cycle_p = anova_table.loc['C(Cycle)', 'PR(>F)'] if 'C(Cycle)' in anova_table.index else 1.0
+
+                        interpretation_texts = []
+                        if interaction_p < 0.05:
+                            interpretation_texts.append(f"✔️ **Significant Interaction Effect (p={interaction_p:.4f}):** The effect of the Group **depends** on the Light/Dark Cycle. Examine the Interaction Plot below.")
+                            interpretation_texts.append("   - *Focus on post-hoc tests comparing groups within each cycle.*")
+                        else:
+                            interpretation_texts.append(f"❌ No Significant Interaction Effect (p={interaction_p:.4f}): The effect of Group is **consistent** across Light and Dark cycles.")
+
+                        if group_p < 0.05:
+                            interpretation_texts.append(f"✔️ **Significant Main Effect of Group (p={group_p:.4f}):** Overall, there is a significant difference between the selected groups (averaging across cycles).")
+                            if interaction_p >= 0.05: # Only suggest post-hoc on main effect if no interaction
+                                interpretation_texts.append("   - *Post-hoc tests can identify which groups differ overall.*")
+                        else:
+                            interpretation_texts.append(f"❌ No Significant Main Effect of Group (p={group_p:.4f}): Overall, no significant difference detected between groups.")
+
+                        if cycle_p < 0.05:
+                            interpretation_texts.append(f"✔️ **Significant Main Effect of Cycle (p={cycle_p:.4f}):** Overall, there is a significant difference between the Light and Dark cycles (averaging across groups).")
+                            if interaction_p >= 0.05: # Only suggest post-hoc on main effect if no interaction
+                                interpretation_texts.append("   - *Post-hoc tests can confirm the overall Light vs Dark difference.*")
+                        else:
+                            interpretation_texts.append(f"❌ No Significant Main Effect of Cycle (p={cycle_p:.4f}): Overall, no significant difference detected between Light and Dark cycles.")
+
+                        st.info("\n".join(interpretation_texts))
+
+
+                        # --- Placeholder for Interaction Plot and Post-Hocs ---
+                        st.markdown("*(Interaction plot and post-hoc tests will be added next)*") # Temporary feedback
+
+
+                    except Exception as e:
+                        st.error(f"An error occurred during data preparation for ANOVA: {e}")
+                        st.exception(e) # Shows detailed traceback for debugging
+                    
             # Tab 4: Publication Plots
             with tab4:
                 st.header("📄 Publication Plots")
