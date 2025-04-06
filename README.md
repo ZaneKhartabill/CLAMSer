@@ -89,6 +89,4 @@ This tool was developed to aid metabolic research. Questions, bug reports, or fe
 
 ## 📜 License
 
-*(Optional: Add a license if you wish. The MIT license is common for open-source projects. If you add one, create a `LICENSE` file and change this section to:*
-*`This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.`
-*If not, you can remove this License section or state "License information not available.")*
+idk how to add one yet lmao
