@@ -399,13 +399,24 @@ with st.sidebar:
 
 
     # --- File Upload ---
-    st.markdown("##### Upload Data File")
+    def handle_file_upload_change():
+        """Clears group assignments when a new file is uploaded or removed."""
+        keys_to_clear = ['group_assignments', 'lean_mass_data', 
+                        # Add any other session state keys that depend on the specific file/groups
+                        'used_group_colors' # Good to clear this too
+                        ]
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        # No explicit rerun needed here, Streamlit handles it on widget change
+    st.markdown(f"##### Upload Data File for: **{parameter}**")
     uploaded_file = st.file_uploader(
         f"Upload {parameter} CSV",
         type="csv",
         help="Upload your CLAMS data file",
-        key="file_upload_1",
-        label_visibility="collapsed" # Hide label
+        key="file_upload_1", # Keep the existing key
+        label_visibility="collapsed",
+        on_change=handle_file_upload_change 
     )
     
 # Main title in content area
@@ -413,46 +424,59 @@ st.title("CLAMSer: CLAMS Data Analyzer adapted for Oxymax-CLAMS-CF Machine")
 
 # --- Analysis Workflow Indicator ---
 
+
 # Define the steps
 workflow_steps = [
     "1. Upload Data",
     "2. Assign Groups",
-    "3. Review Results",
-    "4. Analyze Statistics"
+    "3. Review Results", # Step index 2
+    "4. Analyze Statistics" # Step index 3
 ]
 
-# Calculate the completion status *BEFORE* displaying
-# Note: 'results' might not exist yet if file processing fails, handle this gracefully
-results_exist = 'results' in locals() and results is not None
+# Calculate the enabling/completion status *BEFORE* displaying
 file_uploaded = uploaded_file is not None
 # Check session state for group assignments safely
 groups_assigned = ('group_assignments' in st.session_state and
                  isinstance(st.session_state['group_assignments'], pd.DataFrame) and
                  not st.session_state['group_assignments'].empty)
+# We don't strictly need results_exist for this display logic,
+# but it's good practice to calculate it if available.
+results_exist = 'results' in locals() and results is not None
 
-# Define completion status list based on calculated variables
-completed_steps = [
-    file_uploaded,
-    groups_assigned,
-    results_exist, # Use the existence check
-    False # Step 4 (Analyze) is never marked 'complete' automatically
-]
-
-# Now display the indicator using the calculated status
+# Display the indicator
 st.markdown("### Analysis Workflow")
 cols = st.columns(len(workflow_steps))
-for i, (step, col) in enumerate(zip(workflow_steps, cols)):
-    # Use the 'completed_steps' list calculated above
-    if completed_steps[i]:
-        col.markdown(f"<div style='background-color:#1e4620; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #28a745;'><b>✅ {step}</b></div>", unsafe_allow_html=True)
-    elif i == completed_steps.count(True):  # Current step is the first one not completed
-        col.markdown(f"<div style='background-color:#1a3a6c; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #0d6efd;'><b>➡️ {step}</b></div>", unsafe_allow_html=True)
-    else: # Pending step
-        col.markdown(f"<div style='background-color:#2a2a2a; padding:10px; border-radius:5px; text-align:center; color:#a0a0a0; border:1px solid #6c757d;'>{step}</div>", unsafe_allow_html=True)
 
-st.markdown("---") # Separator before the main tabs
+for i, (step, col) in enumerate(zip(workflow_steps, cols)):
+    # Determine state based on previous steps completed
+    if i == 0: # Step 1: Upload Data
+        if file_uploaded: # If done
+            col.markdown(f"<div style='background-color:#1e4620; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #28a745;'><b>✅ {step}</b></div>", unsafe_allow_html=True)
+        else: # If not done (current)
+            col.markdown(f"<div style='background-color:#1a3a6c; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #0d6efd;'><b>➡️ {step}</b></div>", unsafe_allow_html=True)
+
+    elif i == 1: # Step 2: Assign Groups
+        if groups_assigned: # If done (implies file was also uploaded)
+            col.markdown(f"<div style='background-color:#1e4620; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #28a745;'><b>✅ {step}</b></div>", unsafe_allow_html=True)
+        elif file_uploaded: # If file uploaded but groups not assigned (current)
+            col.markdown(f"<div style='background-color:#1a3a6c; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #0d6efd;'><b>➡️ {step}</b></div>", unsafe_allow_html=True)
+        else: # If file not even uploaded (pending)
+             col.markdown(f"<div style='background-color:#2a2a2a; padding:10px; border-radius:5px; text-align:center; color:#a0a0a0; border:1px solid #6c757d;'>{step}</div>", unsafe_allow_html=True)
+
+    elif i == 2: # Step 3: Review Results
+        if groups_assigned: # Mark as 'done' (green) once groups are assigned
+             col.markdown(f"<div style='background-color:#1e4620; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #28a745;'><b>✅ {step}</b></div>", unsafe_allow_html=True)
+        else: # If groups not assigned (pending)
+             col.markdown(f"<div style='background-color:#2a2a2a; padding:10px; border-radius:5px; text-align:center; color:#a0a0a0; border:1px solid #6c757d;'>{step}</div>", unsafe_allow_html=True)
+
+    elif i == 3: # Step 4: Analyze Statistics
+        if groups_assigned: # Becomes 'current' (blue) once groups are assigned
+             col.markdown(f"<div style='background-color:#1a3a6c; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #0d6efd;'><b>➡️ {step}</b></div>", unsafe_allow_html=True)
+        else: # If groups not assigned (pending)
+             col.markdown(f"<div style='background-color:#2a2a2a; padding:10px; border-radius:5px; text-align:center; color:#a0a0a0; border:1px solid #6c757d;'>{step}</div>", unsafe_allow_html=True)
 
 # --- End Analysis Workflow Indicator ---
+st.markdown("---") # Separator before the main tabs
 
 # Helper functions
 def detect_outliers(df, z_score_threshold=2):
@@ -470,6 +494,8 @@ def detect_outliers(df, z_score_threshold=2):
     
     return outliers
 
+
+    
 def style_dataframe(df):
     """Apply styling to dataframe including outlier highlighting"""
     if df is None:
@@ -527,7 +553,7 @@ def verify_file_type(file, expected_type):
             return True, ""
         else:
             # File appears to be valid CLAMS data, but parameter type might not match
-            return True, f"Note: Selected parameter type '{expected_type}' not explicitly found in file header, but file appears to be valid CLAMS data. Processing anyway..."
+            return True, f"Note: Selected parameter type '{expected_type}' not explicitly found in file uploaded, but file appears to be valid CLAMS data."
             
     except UnicodeDecodeError:
         return False, "File cannot be read. Please ensure it's a valid CSV file."
@@ -1456,7 +1482,7 @@ def generate_pub_bar_chart(group_stats, parameter, error_bar_type='SEM', colors=
                color=colors.get(group, f'C{i}')) # Use provided color or default cycle
 
     # --- Placeholder ---
-    # We will add more styling, labels, titles, and significance annotations later
+    # will add more styling, labels, titles, and significance annotations later
     ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
     ax.set_title(f"{parameter} by Group ({cycle_name}, {error_label})")
     ax.set_xticks(range(len(groups)))
@@ -1519,7 +1545,7 @@ def generate_pub_24h_pattern_plot(hourly_df, selected_groups, parameter, light_s
     # --- Placeholder for further styling ---
     ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
     ax.set_xlabel("Hour of Day")
-    ax.set_title(f"{parameter} 24-Hour Pattern (Mean ± SEM)")
+    ax.set_title(f"{parameter} 24-Hour Pattern (Mean +/- SEM)")
     ax.set_xticks(range(0, 25, 2)) # Set x-axis ticks every 2 hours
     ax.set_xlim(-0.5, 23.5) # Set x-axis limits
     ax.legend(loc='best', fontsize='small')
@@ -1529,108 +1555,135 @@ def generate_pub_24h_pattern_plot(hourly_df, selected_groups, parameter, light_s
     return fig
 
 def generate_pub_timeline_plot(timeline_data, parameter, time_window, subject_to_cage, display_mode="Average", selected_subjects=None, subject_to_group=None, colors=None, light_start=7, light_end=19):
-        """
-        Generates a publication-ready timeline plot using Matplotlib and scienceplots.
+    """
+    Generates a publication-ready timeline plot using Matplotlib and scienceplots.
+    # ... (docstring remains the same) ...
+    """
+    plt.style.use(['science', 'no-latex'])
+    fig, ax = plt.subplots(figsize=(10, 4)) # Wider figure for timeline
 
+    if colors is None: colors = {}
 
-        Args:
-            timeline_data (pd.DataFrame): DataFrame with 'datetime'.
-                                          If display_mode is 'Average', expects 'Mean', 'SEM' cols.
-                                          If display_mode is 'Individual', expects 'cage', 'value' cols.
-            parameter (str): Name of the parameter being plotted.
-            time_window (str): Description of the time window (e.g., "Last 72 Hours").
-            subject_to_cage (dict): Mapping from Subject ID to positional cage name.
-            display_mode (str): "Average" or "Individual".
-            selected_subjects (list, optional): List of subject IDs if mode is "Individual".
-            subject_to_group (dict, optional): Mapping from subject ID to group name.
-            colors (dict, optional): Mapping group or subject IDs to colors.
-            light_start (int): Hour light cycle starts.
-            light_end (int): Hour light cycle ends.
+    y_min_data = float('inf') # Initialize min/max for y-axis scaling
+    y_max_data = float('-inf')
 
+    if display_mode == "Average":
+        if not all(col in timeline_data.columns for col in ['datetime', 'Mean', 'SEM']):
+            st.error("Error: 'datetime', 'Mean', or 'SEM' column missing for average timeline plot.")
+            plt.close(fig) # Close the empty figure
+            return fig # Return empty fig if essential columns are missing
 
-        Returns:
-            matplotlib.figure.Figure: The generated Matplotlib figure object.
-        """
-        plt.style.use(['science', 'no-latex'])
-        fig, ax = plt.subplots(figsize=(10, 4)) # Wider figure for timeline
+        # Plot average line
+        ax.plot(timeline_data['datetime'], timeline_data['Mean'], label=f'Mean {parameter}', color='k', linewidth=1.5)
+        # Plot SEM band
+        ax.fill_between(timeline_data['datetime'],
+                        timeline_data['Mean'] - timeline_data['SEM'],
+                        timeline_data['Mean'] + timeline_data['SEM'],
+                        color='k', alpha=0.15)
+        # Update min/max for y-axis
+        y_min_data = min(y_min_data, (timeline_data['Mean'] - timeline_data['SEM']).min())
+        y_max_data = max(y_max_data, (timeline_data['Mean'] + timeline_data['SEM']).max())
 
-        if colors is None: colors = {}
+    # --- MODIFIED SECTION FOR INDIVIDUAL PLOTTING ---
+    elif display_mode == "Individual":
+        # Check required columns in the pre-filtered data
+        if not all(col in timeline_data.columns for col in ['datetime', 'cage', 'value']):
+            st.error("Error: 'datetime', 'cage', or 'value' column missing for individual timeline plot in provided data.")
+            plt.close(fig) # Close the empty figure
+            return fig # Return empty fig
 
-        y_min_data = float('inf') # Initialize min/max for y-axis scaling
-        y_max_data = float('-inf')
-
-        if display_mode == "Average":
-            if not all(col in timeline_data.columns for col in ['datetime', 'Mean', 'SEM']):
-                 st.error("Error: 'datetime', 'Mean', or 'SEM' column missing for average timeline plot.")
-                 return fig # Return empty fig if essential columns are missing
-
-            # Plot average line
-            ax.plot(timeline_data['datetime'], timeline_data['Mean'], label=f'Mean {parameter}', color='k', linewidth=1.5)
-            # Plot SEM band
-            ax.fill_between(timeline_data['datetime'],
-                            timeline_data['Mean'] - timeline_data['SEM'],
-                            timeline_data['Mean'] + timeline_data['SEM'],
-                            color='k', alpha=0.15)
-            # Update min/max for y-axis
-            y_min_data = min(y_min_data, (timeline_data['Mean'] - timeline_data['SEM']).min())
-            y_max_data = max(y_max_data, (timeline_data['Mean'] + timeline_data['SEM']).max())
-
-        elif display_mode == "Individual" and selected_subjects is not None:
-            if not all(col in timeline_data.columns for col in ['datetime', 'cage', 'value']):
-                 st.error("Error: 'datetime', 'cage', or 'value' column missing for individual timeline plot.")
-                 return fig # Return empty fig
-
-            # Create inverse mapping: cage -> subject_id (needed for legend)
+        # Create inverse mapping: cage -> subject_id (needed for legend)
+        # Ensure subject_to_cage is not empty before creating inverse
+        if not subject_to_cage:
+            st.error("Error: Subject-to-Cage mapping is empty. Cannot create legend.")
+            cage_to_subject = {}
+        else:
             cage_to_subject = {v: k for k, v in subject_to_cage.items()}
 
-            plotted_cages = timeline_data['cage'].unique()
-            for i, cage in enumerate(plotted_cages):
-                 subject_id = cage_to_subject.get(cage, cage) # Get subject ID if possible
-                 # Ensure we only plot subjects that were actually selected AND exist in the map
-                 if subject_id in selected_subjects and cage in cage_to_subject.values():
-                     cage_data = timeline_data[timeline_data['cage'] == cage]
-                     if not cage_data.empty:
-                         line_color = colors.get(subject_id, f'C{i}') # Color by subject or cycle
-                         ax.plot(cage_data['datetime'], cage_data['value'], label=subject_id, color=line_color, linewidth=1)
-                         # Update min/max for y-axis
-                         y_min_data = min(y_min_data, cage_data['value'].min())
-                         y_max_data = max(y_max_data, cage_data['value'].max())
 
-        # --- Add Light/Dark Shading ---
+        # Iterate through the unique cages PRESENT in the passed timeline_data
+        plotted_cages = timeline_data['cage'].unique()
+        if len(plotted_cages) == 0:
+            st.warning("Warning: The data provided for individual plotting contains no cages.") # Add warning
+
+        for i, cage in enumerate(plotted_cages):
+            subject_id = cage_to_subject.get(cage, cage) # Get subject ID for label, fallback to cage name
+
+                # Filter the data for the current cage *within the already filtered timeline_data*
+            cage_data = timeline_data[timeline_data['cage'] == cage]
+
+            if not cage_data.empty:
+                # Use subject_id for color lookup if a color map is provided and contains the ID
+                # Otherwise, default to Matplotlib's color cycle based on iteration index
+                color_key = subject_id if subject_id in colors else f'C{i}' # Use subject_id if possible for consistent color
+                line_color = colors.get(subject_id, f'C{i}') # Get color from dict or use default cycle
+
+                ax.plot(cage_data['datetime'], cage_data['value'], label=subject_id, color=line_color, linewidth=1)
+
+                    # Update min/max for y-axis
+                current_min = cage_data['value'].min()
+                current_max = cage_data['value'].max()
+                if not pd.isna(current_min): y_min_data = min(y_min_data, current_min)
+                if not pd.isna(current_max): y_max_data = max(y_max_data, current_max)
+            #else: # Optional: Add a warning if cage_data becomes empty unexpectedly
+                #    st.warning(f"No data points found for cage {cage} within the filtered data.")
+    # --- END OF MODIFIED SECTION ---
+
+    # --- Add Light/Dark Shading ---
+    # Check if timeline_data is not empty before accessing min/max
+    if not timeline_data.empty:
         min_dt = timeline_data['datetime'].min()
         max_dt = timeline_data['datetime'].max()
-        current_date = min_dt.date()
-        while pd.Timestamp(current_date) <= max_dt:
-             morning_start = pd.Timestamp(f"{current_date} 00:00:00")
-             morning_end = pd.Timestamp(f"{current_date} {light_start:02d}:00:00")
-             evening_start = pd.Timestamp(f"{current_date} {light_end:02d}:00:00")
-             evening_end = pd.Timestamp(f"{current_date} 23:59:59")
+        # Proceed only if min_dt and max_dt are valid Timestamps
+        if pd.notna(min_dt) and pd.notna(max_dt):
+            current_date = min_dt.date()
+            while pd.Timestamp(current_date) <= max_dt:
+                morning_start = pd.Timestamp(f"{current_date} 00:00:00")
+                morning_end = pd.Timestamp(f"{current_date} {light_start:02d}:00:00")
+                evening_start = pd.Timestamp(f"{current_date} {light_end:02d}:00:00")
+                evening_end = pd.Timestamp(f"{current_date} 23:59:59")
 
-             # Draw rectangles only within the plot's date range
-             ax.axvspan(max(morning_start, min_dt), min(morning_end, max_dt), facecolor='grey', alpha=0.15, zorder=-10, lw=0)
-             ax.axvspan(max(evening_start, min_dt), min(evening_end, max_dt), facecolor='grey', alpha=0.15, zorder=-10, lw=0)
+                # Draw rectangles only within the plot's date range
+                # Use max/min to clip the shading boxes to the actual data range
+                ax.axvspan(max(morning_start, min_dt), min(morning_end, max_dt), facecolor='grey', alpha=0.15, zorder=-10, lw=0)
+                ax.axvspan(max(evening_start, min_dt), min(evening_end, max_dt), facecolor='grey', alpha=0.15, zorder=-10, lw=0)
 
-             current_date += timedelta(days=1)
+                current_date += timedelta(days=1)
+        #else: # Optional warning if dates are invalid
+        #     st.warning("Could not determine date range for light/dark shading.")
+    #else: # Optional warning if data is empty
+    # 	st.warning("No data available to determine light/dark shading range.")
 
-        # --- Set Y-axis Limits --- ADDED BLOCK
-        if y_min_data != float('inf') and y_max_data != float('-inf'): # Check if min/max were updated
-             y_range = y_max_data - y_min_data
-             padding = y_range * 0.1 # Add 10% padding
-             ax.set_ylim(max(0, y_min_data - padding), y_max_data + padding) # Set limits, ensure lower bound is >= 0
-        # --- End of ADDED BLOCK ---
 
-        # --- Styling ---
-        ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
-        ax.set_xlabel("Date and Time")
-        ax.set_title(f"{parameter} Timeline ({time_window}) - {'Average ± SEM' if display_mode == 'Average' else 'Individual Animals'}")
-        fig.autofmt_xdate() # Auto-format dates on x-axis
-        # Only show legend if there's something to label (prevents empty legend box)
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-             ax.legend(loc='upper right', fontsize='small')
-        plt.tight_layout()
+    # --- Set Y-axis Limits ---
+    # Check if min/max were updated and are not infinite
+    if y_min_data != float('inf') and y_max_data != float('-inf'):
+        y_range = y_max_data - y_min_data
+        # Handle case where range is zero or very small
+        if y_range <= 0:
+            padding = abs(y_max_data * 0.1) if y_max_data != 0 else 0.5 # Add padding based on value or a fixed amount
+        else:
+            padding = y_range * 0.1 # Add 10% padding
 
-        return fig
+        ax.set_ylim(max(0, y_min_data - padding), y_max_data + padding) # Set limits, ensure lower bound is >= 0
+
+    # --- Styling ---
+    ax.set_ylabel(f"{parameter} ({PARAMETER_UNITS.get(parameter, '')})")
+    ax.set_xlabel("Date and Time")
+    ax.set_title(f"{parameter} Timeline ({time_window}) - {'Average +/- SEM' if display_mode == 'Average' else 'Individual Animals'}") # Used +/-
+    fig.autofmt_xdate() # Auto-format dates on x-axis
+
+    # Only show legend if there's something to label
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        # Place legend outside the plot area to avoid overlap
+        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0., fontsize='small')
+
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1]) # Adjust layout to make space for external legend
+    # The rect parameter might need tuning: [left, bottom, right, top]
+
+    return fig
         
 # Parameter selection with descriptions
 parameter_descriptions = {
@@ -1642,6 +1695,7 @@ parameter_descriptions = {
     "XAMB": "Ambulatory activity counts",
     "FEED": "Food intake (g)"
 }
+
 
 # Create tabs for organization
 tab1, tab2, tab4, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", "📄 Publication Plots", "🧪 How Can I Trust This Data?"])
@@ -1693,11 +1747,18 @@ if uploaded_file is not None:
                                     not st.session_state.get('group_assignments', pd.DataFrame()).empty)
 
                     if not groups_assigned:
-                        # If groups are NOT assigned, show an informational message pointing downwards
-                        st.info("👇 **Action Needed:** Please assign animals to groups in the 'Setup' section below to enable Statistical Analysis and Publication Plots.", icon="💡")
+                        # If groups are NOT assigned, show a prominent warning message
+                        st.warning("👇 **Action Needed:** Please assign animals to groups in the **'Setup: Groups & Lean Mass'** section below to enable **Group-Based Analysis**, **Statistical Analysis** and **Publication Plots**.", icon="⚠️") # Changed to warning icon
                     else:
                         # If groups ARE assigned, show a success message
-                        st.success("✅ Groups assigned. You can modify them in the 'Setup' section below.", icon="👍")
+                        st.success("✅ Groups assigned. You can modify them in the 'Setup' section below. When ready, proceed to Statistical Analysis.", icon="👍")
+                
+                    # --- ADDED: Display Parameter Mismatch Warning ---
+                    # Check if the error_message contains a warning (not a hard error)
+                    # error_message comes from verify_file_type executed earlier
+                    if 'error_message' in locals() and error_message:
+                        st.error(f"⚠️ **Parameter Check:** {error_message} **Did you select the correct parameter?** Processing anyway..." , icon="❗")
+                    # --- END OF ADDED BLOCK ---
 
                     # Add a small visual separator
                     st.markdown("---")
@@ -1848,16 +1909,17 @@ if uploaded_file is not None:
                             )
 
                             # Extract Subject IDs from the selected labels (e.g., "Mouse1 (Group A)" -> "Mouse1")
-                            selected_subjects = [label.split(" (")[0] for label in selected_subject_labels]
-
+                            selected_subjects = [label.split(" (")[0] for label in selected_subject_labels] 
+                            if len(selected_subjects) > 10:
+                                st.caption("⚠️ Selecting many animals might make the plot dense.")
                             # Convert selected Subject IDs to Cage names using the map
                             if selected_subjects and subject_to_cage:
                                 selected_cages = [subject_to_cage[subject] for subject in selected_subjects if subject in subject_to_cage]
                                 if len(selected_cages) != len(selected_subjects):
                                     st.warning("Could not map all selected subjects to cages. Some might be missing from results.")
                             elif not selected_subjects:
-                                st.warning("⚠️ Please select at least one animal to display", icon="🔍") # Added fun icon :)
-
+                                st.warning("⚠️ Please select at least one animal to display", icon="🔍")
+                            
 
                         else:
                             st.warning("No subjects available for selection in results data.")
@@ -2370,10 +2432,15 @@ if uploaded_file is not None:
                 st.header("📈 Statistical Analysis")
 
                 # --- Prerequisite Check ---
-                if uploaded_file is None or 'raw_data' not in locals() or raw_data is None or 'results' not in locals() or results is None:
-                    st.warning("⚠️ Please upload data in the 'Overview' tab first.")
-                elif 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
-                    st.warning("⚠️ Please assign groups in the 'Overview' tab first to perform statistical analysis.")
+                groups_assigned = ('group_assignments' in st.session_state and
+                                not st.session_state.get('group_assignments', pd.DataFrame()).empty)
+
+                if uploaded_file is None or 'raw_data' not in locals() or raw_data is None or 'results' not in locals() or results is None: # Keep existing file check
+                    st.warning("⚠️ Please upload and process data in the 'Overview' tab first.")
+                    st.stop() # Stop rendering this tab
+                elif not groups_assigned:
+                    st.error("🚫 **Action Required:** Please assign animals to groups in the **'Overview' tab → 'Setup: Groups & Lean Mass'** section before using this tab.")
+                    st.stop() # Stop rendering the rest of this tab
                 else:
                     # --- Groups are assigned, proceed with analysis UI ---
                     st.success("Data and groups loaded. Ready for analysis.") # Placeholder confirmation
@@ -3031,18 +3098,34 @@ if uploaded_file is not None:
             # Tab 4: Publication Plots
             with tab4:
                 st.header("📄 Publication Plots")
-                st.markdown("""
-                Generate publication-ready versions of your key plots using Matplotlib
-                with `scienceplots` styling.
-                """)
 
-                # Check if data and groups are available from previous steps
+                # --- Prerequisite Check ---
+                # Perform checks *before* showing any other controls in this tab
+                # Ensure variables like 'uploaded_file', 'results', 'raw_data' are accessible here
+                # They are defined outside the tabs, so they should be unless there's an execution flow issue
+
+                groups_assigned = ('group_assignments' in st.session_state and
+                                not st.session_state.get('group_assignments', pd.DataFrame()).empty)
+
+                # Check 1: File uploaded and processed?
                 if uploaded_file is None or 'results' not in locals() or results is None or 'raw_data' not in locals() or raw_data is None:
-                    st.warning("⚠️ Please upload data via the sidebar first.")
-                elif 'group_assignments' not in st.session_state or st.session_state.get('group_assignments', pd.DataFrame()).empty:
-                    st.warning("⚠️ Please assign groups in the 'Overview' tab first.")
+                    st.warning("⚠️ Please upload and process data in the **'Overview'** tab first.")
+                    # Stop execution *within this tab* if data isn't ready
+                    st.stop()
+
+                # Check 2: Groups assigned? (Only check if data IS ready)
+                elif not groups_assigned:
+                    st.error("🚫 **Action Required:** Please assign animals to groups in the **'Overview' tab → 'Setup: Groups & Lean Mass'** section before using this tab.")
+                    # Stop execution *within this tab* if groups aren't ready
+                    st.stop()
+
+                # --- If all checks passed, display the rest of the tab content ---
                 else:
-                    # --- Define Helper Function (accessible to all plot types in this tab) ---
+                    st.success("Data and groups loaded. Ready for plotting.") # Confirmation message
+                    st.markdown("""
+                    Generate better quality versions of your key plots using Matplotlib
+                    with `scienceplots` styling, suitable for scientific papers, presentations, theses.
+                    """)
                     def save_figure_to_buffer(fig, format):
                         """Saves a matplotlib figure to an in-memory buffer."""
                         buf = io.BytesIO()
@@ -3672,5 +3755,5 @@ if uploaded_file is not None:
                 This tool was developed to streamline the analysis of CLAMS data files.
 
                 ### Questions or feedback?
-                Contact: Menzies Laboratory or Zane Khartabill (email: mkhal061@uottawa.ca)
+                Contact: Zane Khartabill (email: mkhal061@uottawa.ca)
                 """)
