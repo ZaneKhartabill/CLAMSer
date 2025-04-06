@@ -16,6 +16,7 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.stats.power import TTestIndPower
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+from scikit_posthocs import posthoc_ttest
 
 
 # Page setup + title
@@ -312,7 +313,7 @@ with st.sidebar:
 
     # Add note for Entire Dataset
     if time_window == "Entire Dataset":
-        st.info("Entire Dataset can be used to inform your specific acclimation period, which you can then analyze using Custom Range.")
+        st.info("Entire Dataset can be used to inform your specific acclimation period, which you can then analyze using Custom Range!")
     st.divider()
 
     # --- Light/Dark Cycle ---
@@ -410,36 +411,48 @@ with st.sidebar:
 # Main title in content area
 st.title("CLAMSer: CLAMS Data Analyzer adapted for Oxymax-CLAMS-CF Machine")
 
-# Add a simple workflow guide
-if 'current_step' not in st.session_state:
-    st.session_state['current_step'] = 1
+# --- Analysis Workflow Indicator ---
 
+# Define the steps
 workflow_steps = [
-    "1. Upload Data", 
-    "2. Assign Groups", 
-    "3. Review Results", 
+    "1. Upload Data",
+    "2. Assign Groups",
+    "3. Review Results",
     "4. Analyze Statistics"
 ]
 
-# Calculate which steps should be marked as completed
+# Calculate the completion status *BEFORE* displaying
+# Note: 'results' might not exist yet if file processing fails, handle this gracefully
+results_exist = 'results' in locals() and results is not None
 file_uploaded = uploaded_file is not None
-groups_assigned = 'group_assignments' in st.session_state and not st.session_state.get('group_assignments', pd.DataFrame()).empty
-results_available = 'results' in locals() and results is not None
+# Check session state for group assignments safely
+groups_assigned = ('group_assignments' in st.session_state and
+                 isinstance(st.session_state['group_assignments'], pd.DataFrame) and
+                 not st.session_state['group_assignments'].empty)
 
-completed_steps = [file_uploaded, groups_assigned, results_available, False]
+# Define completion status list based on calculated variables
+completed_steps = [
+    file_uploaded,
+    groups_assigned,
+    results_exist, # Use the existence check
+    False # Step 4 (Analyze) is never marked 'complete' automatically
+]
 
-# Create the workflow indicator
+# Now display the indicator using the calculated status
 st.markdown("### Analysis Workflow")
 cols = st.columns(len(workflow_steps))
 for i, (step, col) in enumerate(zip(workflow_steps, cols)):
+    # Use the 'completed_steps' list calculated above
     if completed_steps[i]:
         col.markdown(f"<div style='background-color:#1e4620; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #28a745;'><b>✅ {step}</b></div>", unsafe_allow_html=True)
-    elif i == completed_steps.count(True):  # Current step
+    elif i == completed_steps.count(True):  # Current step is the first one not completed
         col.markdown(f"<div style='background-color:#1a3a6c; color:white; padding:10px; border-radius:5px; text-align:center; border:1px solid #0d6efd;'><b>➡️ {step}</b></div>", unsafe_allow_html=True)
-    else:
+    else: # Pending step
         col.markdown(f"<div style='background-color:#2a2a2a; padding:10px; border-radius:5px; text-align:center; color:#a0a0a0; border:1px solid #6c757d;'>{step}</div>", unsafe_allow_html=True)
 
-st.markdown("---")
+st.markdown("---") # Separator before the main tabs
+
+# --- End Analysis Workflow Indicator ---
 
 # Helper functions
 def detect_outliers(df, z_score_threshold=2):
@@ -1202,7 +1215,7 @@ def assign_groups(cage_df, key_prefix=''):
     )
     
     if subjects_correct == "No":
-        st.error("CLAMSer is adapted specifically for raw CLAMS output. The uploaded file has likely been modified - Please ensure the uploaded file contains the correct subject information")
+        st.error("CLAMSer is adapted specifically for raw Oxymax-CLAMS-CF Machine output. The uploaded file has likely been modified - Please ensure the uploaded file contains the correct subject information.")
         st.stop()
     
     # If subjects are correct, proceed with group assignment
@@ -1267,29 +1280,51 @@ def assign_groups(cage_df, key_prefix=''):
         group_summary = []
         for group_name, cages in group_assignments.items():
             for cage in cages:
-                subject_id = cage_df[cage_df["Cage"] == cage]["Subject ID"].iloc[0]
-            # --- Convert cage format for consistency ---
-            try:
-                # Extract number (e.g., '101'), subtract 100, format as 2 digits ('01')
-                cage_num_match = re.search(r'(\d+)$', str(cage)) # Find digits at the end
-                if cage_num_match:
-                    formatted_cage_num = int(cage_num_match.group(1)) - 100
-                    consistent_cage_name = f"CAGE {formatted_cage_num:02d}"
-                else:
-                    # Fallback if format is unexpected, use original but warn
-                    st.warning(f"Unexpected cage format '{cage}' in assign_groups. Using original.")
-                    consistent_cage_name = cage
-            except Exception as e:
-                 # Fallback on error
-                 st.warning(f"Error formatting cage '{cage}' in assign_groups: {e}. Using original.")
-                 consistent_cage_name = cage
+                # --- Step 1: Get Subject ID ---
+                try:
+                    subject_id = cage_df[cage_df["Cage"] == cage]["Subject ID"].iloc[0]
+                except IndexError:
+                    # This happens if the cage from the multiselect isn't found in the DataFrame
+                    st.error(f"Data Error: Cage '{cage}' selected for Group '{group_name}' not found in the uploaded file's subject list. Skipping this entry.")
+                    continue # Skip to the next cage in the list
+                except Exception as e:
+                    # Catch any other unexpected errors during subject ID lookup
+                    st.error(f"Unexpected error finding Subject ID for Cage '{cage}': {e}. Skipping this entry.")
+                    continue # Skip to the next cage
 
-            group_summary.append({
-                "Group": group_name,
-                "Cage": consistent_cage_name, # <--- Use the consistently formatted name
-                "Subject ID": subject_id
-            })
-            # --- End conversion ---
+                # --- Step 2: Format Cage Name (if Subject ID was found) ---
+                consistent_cage_name = cage # Default to original cage name
+                try:
+                    # Extract number (e.g., '101'), subtract 100, format as 2 digits ('01')
+                    cage_num_match = re.search(r'(\d+)$', str(cage)) # Find digits at the end
+                    if cage_num_match:
+                        # Attempt conversion to integer
+                        cage_num = int(cage_num_match.group(1))
+                        # Check if it's likely a CLAMS cage number (>= 101)
+                        if cage_num >= 101:
+                            formatted_cage_num = cage_num - 100
+                            consistent_cage_name = f"CAGE {formatted_cage_num:02d}"
+                        else:
+                            # It's a number, but not in the expected CLAMS range, use original
+                            st.warning(f"Cage '{cage}' appears numeric but not in expected CLAMS format (>=101). Using original name.")
+                    else:
+                        # Non-numeric or unexpected format, use original
+                        st.warning(f"Unexpected cage format '{cage}' (non-numeric ending). Using original name.")
+                except ValueError:
+                    # Handle error if int() conversion fails (should be rare if re.search worked)
+                    st.warning(f"Error converting cage number part of '{cage}' to integer. Using original name.")
+                except Exception as e:
+                     # Catch any other unexpected errors during formatting
+                     st.warning(f"Error formatting cage '{cage}': {e}. Using original name.")
+                     # 'consistent_cage_name' already defaults to 'cage'
+
+                # --- Step 3: Append to Summary (only if Steps 1 & 2 didn't 'continue') ---
+                group_summary.append({
+                    "Group": group_name,
+                    "Cage": consistent_cage_name, # Use the (potentially) formatted name
+                    "Subject ID": subject_id
+                })
+            # --- End of loop for this group's cages ---
                 
         # Make sure we have at least one row before creating the DataFrame
         if not group_summary:
@@ -1615,7 +1650,7 @@ with tab1:
     # Only show welcome message if no file is uploaded
     if uploaded_file is None:
         st.markdown("""
-        ## Welcome to CLAMSer 🧬
+        ## Welcome to CLAMSer 
 
         This tool analyzes metabolic data from Comprehensive Lab Animal Monitoring System (CLAMS) files.
 
@@ -1623,7 +1658,7 @@ with tab1:
         1. Upload your CLAMS data file using the sidebar
         2. Select the parameter type (VO2, VCO2, RER, etc.)
         3. Choose your preferred time window
-        4. Review the analysis below
+        4. Explore the results across the different tabs.
 
         The Overview tab provides summary metrics, 24-hour patterns, and detailed data tables for your CLAMS data.
         """)
@@ -1743,7 +1778,7 @@ if uploaded_file is not None:
                             normal_pattern = day_night_ratio < 1  # Food intake is normally higher during dark for nocturnal animals
                         
                         st.info(f"**Day/Night Pattern**: {parameter} is {percent_diff:.1f}% {direction} during light cycle compared to dark cycle, " + 
-                                ("suggesting normal nocturnal activity. I.E. it is a good thing :)" if normal_pattern else "which may indicate altered circadian rhythm."))
+                                ("suggesting normal nocturnal activity." if normal_pattern else "which may indicate altered circadian rhythm."))
                     
 
 
@@ -1821,7 +1856,7 @@ if uploaded_file is not None:
                                 if len(selected_cages) != len(selected_subjects):
                                     st.warning("Could not map all selected subjects to cages. Some might be missing from results.")
                             elif not selected_subjects:
-                                st.warning("⚠️ Please select at least one animal to display", icon=" 동물 ") # Added fun icon :)
+                                st.warning("⚠️ Please select at least one animal to display", icon="🔍") # Added fun icon :)
 
 
                         else:
@@ -1888,7 +1923,7 @@ if uploaded_file is not None:
                         ))
                     else:  # Focus on Individual Animals
                         # Plot each selected cage as a separate line
-                        for i, cage in enumerate(timeline_results['cage'].unique()):
+                        for i, cage in enumerate(selected_cages):
                             # Get data for this cage
                             cage_data = timeline_results[timeline_results['cage'] == cage]
                             
@@ -2444,55 +2479,86 @@ if uploaded_file is not None:
                             st.stop()
 
                         # 2. Calculate Mean per Animal per Cycle:
-                        #    Group by 'Subject ID' and 'is_light', then calculate the mean 'value'.
+                        #    Group by 'Subject ID', 'Group', 'is_light', calculate mean 'value'.
                         anova_input_df = analysis_data_filtered.groupby(['Subject ID', 'Group', 'is_light'])['value'].mean().reset_index()
-                        # Check for and handle potential NaN values in 'Mean Value'
-                        if anova_input_df['Mean Value'].isnull().any():
-                            st.warning("⚠️ Some animals had missing mean values for Light or Dark cycle (likely due to no data points in that cycle). These animals/cycles will be excluded from the ANOVA.", icon="📉")
-                            # Display rows with NaN before dropping (for debugging/info)
-                            st.dataframe(anova_input_df[anova_input_df['Mean Value'].isnull()])
-                            # Drop rows with NaN in 'Mean Value'
-                            anova_input_df_clean = anova_input_df.dropna(subset=['Mean Value']).copy()
-                        else:
-                            anova_input_df_clean = anova_input_df.copy() # Use the original df if no NaNs
 
-                        # --- Re-check if enough data remains after dropping NaNs ---
+                        # --- Handle Potential NaNs (using the correct column name 'value') ---
+                        # Check if any NaNs exist in the 'value' column AFTER the groupby/mean
+                        if anova_input_df['value'].isnull().any():
+                            st.warning("⚠️ Some animals had missing mean values for Light or Dark cycle (likely due to no data points in that cycle within the selected time window). These specific animal/cycle combinations will be excluded from the ANOVA.", icon="📉")
+                            # Display rows with NaN before dropping (for debugging/info)
+                            st.write("Rows with missing mean values (excluded):")
+                            st.dataframe(anova_input_df[anova_input_df['value'].isnull()])
+                            # Drop rows with NaN in the 'value' column to create the clean dataset
+                            anova_input_df_clean = anova_input_df.dropna(subset=['value']).copy()
+                        else:
+                            # If no NaNs, the clean dataset is the same as the original
+                            anova_input_df_clean = anova_input_df.copy()
+
+                        # --- Validate Clean Data ---
                         if anova_input_df_clean.empty:
                             st.error("No valid data remaining after removing missing values. Cannot perform ANOVA.")
                             st.stop()
-                        # Check if each group/cycle combo still has data (more robust check)
-                        min_n_per_cell = anova_input_df_clean.groupby(['Group', 'Cycle'])['Subject ID'].nunique().min()
+
+                        # Add 'Cycle' column based on 'is_light' to the CLEAN DataFrame
+                        anova_input_df_clean['Cycle'] = anova_input_df_clean['is_light'].map({True: 'Light', False: 'Dark'})
+
+                        # Rename the 'value' column to 'Mean Value' in the CLEAN DataFrame
+                        anova_input_df_clean = anova_input_df_clean.rename(columns={'value': 'Mean Value'})
+
+                        # Check if each group/cycle combo still has data AFTER cleaning
+                        n_check = anova_input_df_clean.groupby(['Group', 'Cycle'])['Subject ID'].nunique()
+                        min_n_per_cell = n_check.min()
+
                         if min_n_per_cell < 1: # Need at least one observation per cell for 2-way ANOVA
                             st.error("Some Group/Cycle combinations have zero animals after removing missing values. Cannot perform standard Two-Way ANOVA.")
-                            st.dataframe(anova_input_df_clean.groupby(['Group', 'Cycle'])['Subject ID'].nunique())
+                            st.write("Animal counts per Group/Cycle combination (after cleaning):")
+                            st.dataframe(n_check.unstack(fill_value=0)) # Show pivot table of counts
                             st.stop()
-                        # Optional: Check for sufficient N for reliable ANOVA (e.g., >= 3 per cell)
+
+                        # Optional: Warn for low sample size
                         if min_n_per_cell < 3:
-                            st.warning(f"Low sample size (N={min_n_per_cell}) in at least one Group/Cycle combination. ANOVA results may be less reliable.", icon="🔬")
+                            st.warning(f"Low sample size (minimum N={min_n_per_cell}) in at least one Group/Cycle combination. ANOVA results may be less reliable.", icon="🔬")
 
-                        # Rename 'is_light' (True/False) to a more readable 'Cycle' ('Light'/'Dark')
-                        anova_input_df['Cycle'] = anova_input_df['is_light'].map({True: 'Light', False: 'Dark'})
+                        # Select and reorder final columns for the ANOVA input table using the CLEAN data
+                        anova_input_df_clean = anova_input_df_clean[['Subject ID', 'Group', 'Cycle', 'Mean Value']]
 
-                        # Rename 'value' column to 'Mean Value' for clarity
-                        anova_input_df = anova_input_df.rename(columns={'value': 'Mean Value'})
-
-                        # Select and reorder final columns for the ANOVA input table
-                        anova_input_df = anova_input_df[['Subject ID', 'Group', 'Cycle', 'Mean Value']]
-
-                        if anova_input_df.empty or anova_input_df['Mean Value'].isnull().any():
-                            st.error("Failed to calculate mean values per animal per cycle. Check raw data.")
-                            st.dataframe(anova_input_df.head()) # Show head to help debug
+                        # Final check on the cleaned data before passing to model
+                        if anova_input_df_clean.empty or anova_input_df_clean['Mean Value'].isnull().any():
+                            st.error("Data preparation failed unexpectedly after cleaning. Check intermediate steps.")
+                            st.dataframe(anova_input_df_clean.head())
                             st.stop()
 
+                        # --- Cleaned data 'anova_input_df_clean' is now ready for the model ---
 
-                        # 3. Display Data Summary (Optional but good practice): Show N per condition
-                        st.markdown("##### Data Summary (N per Condition)")
-                        # Pivot table to show counts easily
-                        n_table = pd.pivot_table(anova_input_df, values='Subject ID', index='Group', columns='Cycle', aggfunc='nunique')
-                        st.dataframe(n_table.fillna(0).astype(int)) # Fill missing combos with 0
-                        if n_table.isnull().any().any():
-                            st.warning("Note: Some Group/Cycle combinations have no animals after filtering.", icon="⚠️")
 
+                        # --- Cleaned data 'anova_input_df_clean' is now ready for the model ---
+
+                        # 3. Display Data Summary (Using the CLEANED data)
+                        st.markdown("##### Data Summary (N per Condition for ANOVA)")
+                        st.markdown("Number of animals included in the ANOVA for each condition:")
+                        try:
+                            # Create pivot table from the CLEAN data which has the 'Cycle' column
+                            n_table = pd.pivot_table(
+                                anova_input_df_clean, # <<< USE CLEAN DATAFRAME
+                                values='Subject ID',
+                                index='Group',
+                                columns='Cycle',
+                                aggfunc='nunique',
+                                fill_value=0 # Fill missing group/cycle combos directly
+                            )
+                            st.dataframe(n_table.astype(int)) # Display the table
+
+                            # Check if any cell in the displayed table is 0 (after fill_value)
+                            if (n_table == 0).any().any():
+                                 st.warning("Note: Some Group/Cycle combinations had 0 animals after filtering/cleaning and were excluded from the ANOVA.", icon="⚠️")
+
+                        except KeyError as e:
+                            st.error(f"Error creating summary N table: Missing expected column - {e}. Check data preparation steps.")
+                            st.write("Columns available in anova_input_df_clean:", anova_input_df_clean.columns)
+                        except Exception as e:
+                            st.error(f"An unexpected error occurred while creating the summary N table: {e}")
+                            st.dataframe(anova_input_df_clean.head()) # Show head for debugging
 
                         # --- Fit Two-Way ANOVA Model ---
                         # Define the model formula: Mean Value depends on Group, Cycle, and their interaction
@@ -2561,13 +2627,403 @@ if uploaded_file is not None:
                         else:
                             interpretation_texts.append(f"❌ No Significant Main Effect of Cycle (p={cycle_p:.4f}): Overall, no significant difference detected between Light and Dark cycles.")
 
-                        st.info("\n".join(interpretation_texts))
+                        st.info("\n".join(interpretation_texts)) # Keep this line
+
+                        # --- Interaction Plot ---
+                        st.markdown("##### Interaction Plot: Group vs. Cycle")
+                        try:
+                            # Calculate means and SEM for plotting
+                            interaction_plot_data = anova_input_df_clean.groupby(['Group', 'Cycle'])['Mean Value'].agg(
+                                Mean='mean',
+                                SEM='sem' # Standard Error of the Mean
+                            ).reset_index()
+
+                            if interaction_plot_data.empty:
+                                 st.warning("Could not calculate data needed for interaction plot.")
+                            else:
+                                # Get unique groups in the order they appear for consistent coloring
+                                # Use the order from the n_table index if available, else from plot data
+                                if 'n_table' in locals():
+                                    ordered_groups = n_table.index.tolist()
+                                else:
+                                    ordered_groups = interaction_plot_data['Group'].unique().tolist()
+
+                                # Create the Plotly figure
+                                fig_interaction = px.line(
+                                    interaction_plot_data,
+                                    x='Cycle',          # 'Light', 'Dark' on x-axis
+                                    y='Mean',           # Average of the 'Mean Value' on y-axis
+                                    color='Group',      # Different colored line for each Group
+                                    markers=True,       # Show markers at each point (Light/Dark)
+                                    labels={'Mean': f'Mean {parameter} ({PARAMETER_UNITS.get(parameter, "")})'}, # Y-axis label
+                                    title=f'Interaction Plot: Mean {parameter} by Group and Cycle',
+                                    category_orders={ # Ensure consistent coloring and legend order
+                                         'Group': ordered_groups,
+                                         'Cycle': ['Light', 'Dark'] # Ensure Light is plotted before Dark
+                                    },
+                                    error_y='SEM' # Add error bars based on the calculated SEM column
+                                )
+
+                                # Customize layout
+                                fig_interaction.update_layout(
+                                    xaxis_title="Light/Dark Cycle",
+                                    yaxis_title=f'Mean {parameter} ({PARAMETER_UNITS.get(parameter, "")})',
+                                    legend_title="Group",
+                                    hovermode="x unified" # Show hover info for all groups at once
+                                )
+                                fig_interaction.update_traces(
+                                     error_y_thickness=1, # Thinner error bars
+                                     error_y_width=10     # Width of caps on error bars
+                                )
 
 
-                        # --- Placeholder for Interaction Plot and Post-Hocs ---
-                        st.markdown("*(Interaction plot and post-hoc tests will be added next)*") # Temporary feedback
+                                # Display the plot
+                                st.plotly_chart(fig_interaction, use_container_width=True)
+                                
+                                # --- Summary Statistics Table ---
+                                st.markdown("##### Summary Statistics (Mean ± SEM, N)")
+                                st.markdown("Values used for the interaction plot above:")
+
+                                # Calculate N (number of unique subjects per group/cycle)
+                                summary_n = anova_input_df_clean.groupby(['Group', 'Cycle'])['Subject ID'].nunique().reset_index().rename(columns={'Subject ID': 'N'})
+
+                                # Merge N with the existing Mean and SEM data
+                                summary_stats_table = pd.merge(interaction_plot_data, summary_n, on=['Group', 'Cycle'], how='left')
+
+                                # Format the table for display
+                                summary_stats_table['Mean'] = summary_stats_table['Mean'].map('{:.3f}'.format) # Adjust formatting as needed
+                                summary_stats_table['SEM'] = summary_stats_table['SEM'].map('{:.3f}'.format) # Adjust formatting as needed
+
+                                # Display the table, setting index for better readability
+                                st.dataframe(summary_stats_table.set_index(['Group', 'Cycle']))
+                                # --- End Summary Statistics Table ---
+
+                            with st.expander("How to read this plot"):
+                                st.markdown(f"""
+                                *   **X-axis:** Shows the two conditions: 'Light' cycle and 'Dark' cycle.
+                                *   **Y-axis:** Shows the average **{parameter}** value.
+                                *   **Lines:** Each colored line connects the average value for a specific **Group** during the Light cycle to its average value during the Dark cycle.
+                                *   **Error Bars:** The vertical lines represent the Standard Error of the Mean (SEM) for each point, indicating the precision of that group's average in that specific cycle.
+                                *   **Interaction:** Look at how the lines behave relative to each other.
+                                    *   *Parallel lines* suggest **no interaction** (the difference between groups is similar in both cycles). This matches your ANOVA result (p={interaction_p:.4f}).
+                                    *   *Non-parallel or crossing lines* would suggest an **interaction** (the effect of the group depends on the cycle).
+                                """)
+
+                        except Exception as e:
+                            st.error(f"An error occurred while generating the interaction plot: {e}")
+                            st.dataframe(interaction_plot_data.head() if 'interaction_plot_data' in locals() else "Plot data not generated.")
+
+                        # --- Post-Hoc Tests (Conditional) ---
+                        st.markdown("---") # Add a separator
+
+                        # Check if any ANOVA effect was significant enough to warrant post-hoc tests
+                        if interaction_p < 0.05 or group_p < 0.05 or cycle_p < 0.05:
+                            # If significant, create an expander for the tests
+                            with st.expander("🔬 Post-Hoc Tests (Pairwise Comparisons - Tukey HSD)", expanded=False):
+                                try:
+                                    # 1. Prepare data for Tukey HSD: Create a single combined factor
+                                    #    We need a unique label for each condition (e.g., "GroupA_Dark")
+                                    #    We add this as a new column to our clean ANOVA input data.
+                                    data_for_tukey = anova_input_df_clean.copy() # Work on a copy
+                                    data_for_tukey['Group_Cycle'] = data_for_tukey['Group'] + "_" + data_for_tukey['Cycle']
+
+                                    # Check if the new column was created successfully
+                                    if 'Group_Cycle' not in data_for_tukey.columns:
+                                        st.error("Failed to create combined 'Group_Cycle' column for post-hoc tests.")
+                                    else:
+                                        # 2. Run Tukey HSD test
+                                        #    We compare the 'Mean Value' across the different 'Group_Cycle' labels.
+                                        tukey_results = pairwise_tukeyhsd(
+                                            endog=data_for_tukey['Mean Value'], # The dependent variable (your measured parameter)
+                                            groups=data_for_tukey['Group_Cycle'], # The labels identifying each group/condition
+                                            alpha=0.05 # The significance level (usually 0.05)
+                                        )
+
+                                        # 3. Display Tukey HSD Results
+                                        st.markdown("##### Tukey HSD Results")
+                                        st.markdown("Compares all pairs of conditions (Group & Cycle combined). `reject=True` indicates a significant difference (p-adj < 0.05).")
+
+                                        # The results object has a nice summary table built-in.
+                                        # We can convert it to a Pandas DataFrame for better display in Streamlit.
+                                        tukey_df = pd.DataFrame(data=tukey_results._results_table.data[1:], columns=tukey_results._results_table.data[0])
+
+                                        # Optional: Add significance stars for quick visual scanning (using the function defined earlier)
+                                        if 'p-adj' in tukey_df.columns and 'Sig.' not in tukey_df.columns: # Add Sig column if not present
+                                            # Ensure p-adj is numeric before applying stars
+                                            tukey_df['p-adj'] = pd.to_numeric(tukey_df['p-adj'], errors='coerce')
+                                            tukey_df['Sig.'] = tukey_df['p-adj'].apply(add_p_value_stars)
 
 
+                                        # Format numeric columns for better readability before display
+                                        numeric_cols_tukey = ['mean_diff', 'p-adj', 'lower', 'upper']
+                                        for col in numeric_cols_tukey:
+                                            if col in tukey_df.columns:
+                                                # Convert to numeric first (robustness), then format
+                                                tukey_df[col] = pd.to_numeric(tukey_df[col], errors='coerce').map('{:.4f}'.format)
+
+
+                                        # Display the formatted DataFrame
+                                        st.dataframe(tukey_df)
+
+                                        # 4. Interpretation Guidance (Crucial!)
+                                        st.markdown("##### How to Interpret Tukey HSD Results:")
+                                        # Provide advice based on the ANOVA interaction result
+                                        if interaction_p < 0.05:
+                                            st.info(f"""
+                                            **Focus on Simple Effects (Interaction was Significant, p={interaction_p:.4f}):**
+                                            *   Compare groups **within the Dark cycle** (look for pairs like 'GroupA_Dark' vs 'GroupB_Dark').
+                                            *   Compare groups **within the Light cycle** (look for pairs like 'GroupA_Light' vs 'GroupB_Light').
+                                            *   Compare Light vs Dark **within each Group** (look for pairs like 'GroupA_Dark' vs 'GroupA_Light').
+                                            """)
+                                        else:
+                                            st.info(f"""
+                                            **Focus on Main Effects (Interaction was NOT Significant, p={interaction_p:.4f}):**
+                                            *   If the **Group** main effect was significant (p={group_p:.4f}), look for consistent differences between groups across *both* cycles (e.g., is 'GroupA_Dark' different from 'GroupB_Dark' AND 'GroupA_Light' different from 'GroupB_Light'?).
+                                            *   If the **Cycle** main effect was significant (p={cycle_p:.4f}), look for consistent differences between Dark and Light within *each* group (e.g., is 'GroupA_Dark' different from 'GroupA_Light', 'GroupB_Dark' vs 'GroupB_Light', etc.?).
+                                            """)
+                                        st.caption("`group1`, `group2`: The pair being compared. `mean_diff`: Difference in means (group2 - group1). `p-adj`: Adjusted p-value. `lower`, `upper`: Confidence interval for the mean difference. `reject`: True if p-adj < alpha (0.05).")
+
+                                # Error handling for the post-hoc step
+                                except ImportError:
+                                    st.error("Could not perform post-hoc tests. The 'statsmodels' library might be missing or improperly installed.")
+                                except AttributeError:
+                                    st.error("An issue occurred accessing Tukey HSD results. Check data preparation.")
+                                    st.dataframe(data_for_tukey.head()) # Show data used
+                                except Exception as e:
+                                    st.error(f"An unexpected error occurred during post-hoc analysis: {e}")
+                                    st.exception(e) # Show full traceback for debugging
+
+                        else:
+                            # If no ANOVA effects were significant, inform the user
+                            st.success("No significant effects found in the Two-Way ANOVA (all p-values > 0.05). Post-hoc tests are typically not performed in this case.")
+
+                        # --- End of Post-Hoc Section ---
+                        # --- Secondary Analysis: Simple Comparisons ---
+                        st.markdown("---") # Separator
+                        with st.expander("🔎 Quick Comparisons (Specific Cycle or 24h Average)", expanded=False):
+
+                            # --- Step 1: Select Data Slice ---
+                            st.markdown("**1. Select Data to Compare:**")
+                            
+                            # Define available columns based on the parameter
+                            if parameter in ["XTOT", "XAMB"]:
+                                comparison_options = {
+                                    "Light Cycle (Avg Activity)": "True (Average Activity)",
+                                    "Dark Cycle (Avg Activity)": "False (Average Activity)",
+                                    "24h Average (Avg Activity)": "24h Average" # Check if this exists in your 'results' df
+                                }
+                            elif parameter == "FEED":
+                                comparison_options = {
+                                    "Light Cycle (Avg Rate)": "Average Rate (Light)",
+                                    "Dark Cycle (Avg Rate)": "Average Rate (Dark)",
+                                    # Add total intake options if relevant
+                                    "Light Cycle (Total Intake)": "Total Intake (Light)",
+                                    "Dark Cycle (Total Intake)": "Total Intake (Dark)",
+                                }
+                            else: # VO2, VCO2, RER, HEAT
+                                comparison_options = {
+                                    "Light Cycle Average": "Light Average",
+                                    "Dark Cycle Average": "Dark Average",
+                                    "Total (24h) Average": "Total Average"
+                                }
+
+                            # Filter options based on columns actually present in the results DataFrame
+                            available_comparison_options = {k: v for k, v in comparison_options.items() if v in results.columns}
+
+                            if not available_comparison_options:
+                                st.warning(f"No suitable columns found in the results table for quick comparisons with parameter '{parameter}'.")
+                            else:
+                                selected_option_key = st.radio(
+                                    "Choose the specific metric to compare:",
+                                    options=list(available_comparison_options.keys()),
+                                    key="quick_compare_metric_select",
+                                    horizontal=True
+                                )
+                                # Get the actual column name corresponding to the user's selection
+                                column_to_compare = available_comparison_options[selected_option_key]
+
+                                # --- Step 2: Select Groups for THIS comparison ---
+                                st.markdown("**2. Select Groups for this Comparison:**")
+                                # Get available groups (already available from main ANOVA section)
+                                # available_groups_stat = sorted(group_assignments_df['Group'].unique()) # Already defined earlier
+                                
+                                selected_groups_quick = st.multiselect(
+                                    "Select 2 or more groups for this specific comparison:",
+                                    options=available_groups_stat,
+                                    default=available_groups_stat[:2] if len(available_groups_stat) >= 2 else available_groups_stat, # Default to first 2 groups
+                                    key="quick_compare_group_select",
+                                    help="Choose groups to compare using the selected metric."
+                                )
+
+                                # --- Step 3: Prepare Data & Run Test ---
+                                if len(selected_groups_quick) < 2:
+                                    st.warning("⚠️ Please select at least two groups for comparison.")
+                                else:
+                                    try:
+                                        st.markdown("**3. Comparison Results:**")
+                                        
+                                        # Prepare the data for the simple comparison
+                                        # Merge 'results' table with group assignments
+                                        results_with_groups_quick = pd.merge(
+                                            results, # Use the main 'results' summary table
+                                            group_assignments_df[['Subject ID', 'Group']],
+                                            on='Subject ID',
+                                            how='inner' # Keep only animals present in both results and assignments
+                                        )
+                                        
+                                        # Filter for selected groups AND the chosen column
+                                        quick_comp_data = results_with_groups_quick[
+                                            results_with_groups_quick['Group'].isin(selected_groups_quick)
+                                        ][['Group', 'Subject ID', column_to_compare]].copy()
+
+                                        # Drop rows with missing data in the column being compared
+                                        quick_comp_data.dropna(subset=[column_to_compare], inplace=True)
+
+                                        # Check if data remains after filtering/dropping NaN
+                                        if quick_comp_data.empty or quick_comp_data['Group'].nunique() < 2:
+                                            st.warning(f"Not enough data or groups remaining for comparison after filtering for '{selected_option_key}' and selected groups.")
+                                        else:
+                                            # --- Perform T-test or One-Way ANOVA ---
+                                            groups_for_test = quick_comp_data.groupby('Group')[column_to_compare].apply(list)
+                                            
+                                            if len(selected_groups_quick) == 2:
+                                                # Perform Independent Samples T-test
+                                                group1_data = groups_for_test.iloc[0]
+                                                group2_data = groups_for_test.iloc[1]
+                                                
+                                                # Check for sufficient data in each group
+                                                if len(group1_data) < 2 or len(group2_data) < 2:
+                                                    st.warning("Need at least 2 data points per group for a t-test.")
+                                                else:
+                                                    t_stat, p_val_ttest = stats.ttest_ind(group1_data, group2_data, equal_var=False) # Welch's t-test (doesn't assume equal variances)
+                                                    
+                                                    st.metric(
+                                                        label=f"T-test Result ({groups_for_test.index[0]} vs {groups_for_test.index[1]})",
+                                                        value=f"p = {p_val_ttest:.4f}",
+                                                        delta="Significant" if p_val_ttest < 0.05 else "Not Significant",
+                                                        delta_color=("inverse" if p_val_ttest < 0.05 else "off")
+                                                    )
+                                                    st.caption(f"Comparing '{selected_option_key}'. Welch's t-test used.")
+
+                                            else: # 3 or more groups selected
+                                                # Perform One-Way ANOVA
+                                                # Check for sufficient data
+                                                if any(len(group_data) < 2 for group_data in groups_for_test):
+                                                    st.warning("Need at least 2 data points per group for ANOVA.")
+                                                else:
+                                                    f_stat, p_val_anova = stats.f_oneway(*groups_for_test)
+                                                    
+                                                    st.metric(
+                                                        label=f"One-Way ANOVA Result ({len(selected_groups_quick)} groups)",
+                                                        value=f"p = {p_val_anova:.4f}",
+                                                        delta="Significant Overall" if p_val_anova < 0.05 else "Not Significant Overall",
+                                                        delta_color=("inverse" if p_val_anova < 0.05 else "off")
+                                                    )
+                                                    st.caption(f"Comparing '{selected_option_key}'.")
+
+                                                    # --- Post-Hoc for One-Way ANOVA (if significant) ---
+                                                    if p_val_anova < 0.05:
+                                                        st.markdown("##### Post-Hoc Tests (Pairwise T-tests with Bonferroni Correction)")
+                                                        
+                                                        # Use scikit-posthocs for pairwise t-tests with correction
+                                                        # Need to provide data in a specific format (long format: value, group)
+                                                        posthoc_df = posthoc_ttest(quick_comp_data, val_col=column_to_compare, group_col='Group', p_adjust='bonferroni', equal_var=False) # Use Welch's t-test assumption
+
+                                                        # Display the results (heatmap style is often used, or just the table)
+                                                        st.dataframe(posthoc_df.style.format("{:.4f}").applymap(lambda x: 'background-color: yellow' if x<0.05 else ''))
+                                                        st.caption("Table shows Bonferroni-adjusted p-values for pairwise t-tests. Yellow cells indicate p < 0.05.")
+
+                                            # --- Simple Bar Chart for Quick Comparison ---
+                                            st.markdown("##### Quick Plot")
+                                            quick_plot_data = quick_comp_data.groupby('Group')[column_to_compare].agg(['mean', 'sem']).reset_index()
+
+                                            fig_quick = px.bar(
+                                                quick_plot_data,
+                                                x='Group',
+                                                y='mean',
+                                                error_y='sem',
+                                                labels={'mean': f'Mean {selected_option_key}', 'Group': 'Selected Groups'},
+                                                title=f"Quick Comparison: Mean {selected_option_key}",
+                                                color='Group', # Color bars by group
+                                                color_discrete_map=GROUP_COLORS # Use predefined colors
+                                            )
+                                            fig_quick.update_layout(showlegend=False) # Hide legend if coloring by x-axis group
+                                            st.plotly_chart(fig_quick, use_container_width=True)
+
+                                    except ImportError:
+                                        st.error("Error running comparison: 'scipy.stats' or 'scikit_posthocs' might be missing. Please ensure they are installed.")
+                                    except Exception as e:
+                                        st.error(f"An error occurred during the quick comparison: {e}")
+                                        st.exception(e) # Show traceback
+                        # --- Export Analysis Results ---
+                        st.markdown("---") # Separator before export section
+                        st.subheader("📥 Export Statistical Analysis Results")
+                        st.markdown("Download tables generated in this analysis tab.")
+
+                        export_col1, export_col2, export_col3 = st.columns(3) # Use columns for layout
+
+                        # Export Button 1: Two-Way ANOVA Table
+                        with export_col1:
+                            if 'anova_table' in locals() and anova_table is not None:
+                                try:
+                                    # Use the original anova_table before display formatting
+                                    csv_anova = anova_table.to_csv().encode('utf-8')
+                                    st.download_button(
+                                        label="Download ANOVA Table",
+                                        data=csv_anova,
+                                        file_name=f"{parameter}_TwoWayANOVA_results.csv",
+                                        mime="text/csv",
+                                        help="Download the main Two-Way ANOVA (Group x Cycle) results table.",
+                                        key="export_anova_table"
+                                    )
+                                except Exception as e:
+                                    st.warning(f"Could not prepare ANOVA table for download: {e}")
+                            else:
+                                st.button("Download ANOVA Table", disabled=True, help="ANOVA table not generated.")
+
+                        # Export Button 2: Summary Statistics (Mean/SEM/N) Table
+                        with export_col2:
+                            # Use the 'summary_stats_table' we created before displaying it
+                            if 'summary_stats_table' in locals() and summary_stats_table is not None:
+                                try:
+                                    # Prepare a version for export (maybe without the index set)
+                                    export_summary_stats = summary_stats_table.reset_index() # Flatten index for CSV
+                                    csv_summary_stats = export_summary_stats.to_csv(index=False).encode('utf-8')
+                                    st.download_button(
+                                        label="Download Summary Stats",
+                                        data=csv_summary_stats,
+                                        file_name=f"{parameter}_Group_Cycle_Summary_Stats.csv",
+                                        mime="text/csv",
+                                        help="Download Mean, SEM, and N for each Group/Cycle condition.",
+                                        key="export_summary_stats"
+                                    )
+                                except Exception as e:
+                                    st.warning(f"Could not prepare Summary Stats table for download: {e}")
+                            else:
+                                st.button("Download Summary Stats", disabled=True, help="Summary Stats table not generated.")
+
+                        # Export Button 3: Tukey HSD Post-Hoc Table
+                        with export_col3:
+                            # Use the 'tukey_df' we created for display
+                            if 'tukey_df' in locals() and tukey_df is not None:
+                                try:
+                                    # Export the DataFrame as created/formatted for display
+                                    csv_tukey = tukey_df.to_csv(index=False).encode('utf-8')
+                                    st.download_button(
+                                        label="Download Post-Hoc Table",
+                                        data=csv_tukey,
+                                        file_name=f"{parameter}_TukeyHSD_PostHoc.csv",
+                                        mime="text/csv",
+                                        help="Download the pairwise comparison results (Tukey HSD). Only available if ANOVA was significant.",
+                                        key="export_tukey_table"
+                                    )
+                                except Exception as e:
+                                    st.warning(f"Could not prepare Post-Hoc table for download: {e}")
+                            else:
+                                # Show disabled button if Tukey wasn't run or failed
+                                st.button("Download Post-Hoc Table", disabled=True, help="Post-Hoc table not generated (ANOVA may not have been significant).")
+
+                            # --- End of Export Section ---
                     except Exception as e:
                         st.error(f"An error occurred during data preparation for ANOVA: {e}")
                         st.exception(e) # Shows detailed traceback for debugging
