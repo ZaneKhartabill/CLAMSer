@@ -410,6 +410,12 @@ with st.sidebar:
                 del st.session_state[key]
         # No explicit rerun needed here, Streamlit handles it on widget change
     st.markdown(f"##### Upload Data File for: **{parameter}**")
+    if parameter == "FEED":
+        st.warning(
+            "⚠️ **Important:** For Feed data, please ensure you upload the **'FEED1 ACC.CSV'** file. "
+            "The regular 'FEED1.CSV' file can be prone to errors (e.g., from animals interacting with the sensor).",
+            icon="❗"
+        )
     uploaded_file = st.file_uploader(
         f"Upload {parameter} CSV",
         type="csv",
@@ -1748,7 +1754,7 @@ if uploaded_file is not None:
 
                     if not groups_assigned:
                         # If groups are NOT assigned, show a prominent warning message
-                        st.warning("👇 **Action Needed:** Please assign animals to groups in the **'Setup: Groups & Lean Mass'** section below to enable **Group-Based Analysis**, **Statistical Analysis** and **Publication Plots**.", icon="⚠️") # Changed to warning icon
+                        st.info("👇 **Action Needed:** Please assign animals to groups in the **'Setup: Groups & Lean Mass'** section below to enable **Group-Based Analysis**, **Statistical Analysis** and **Publication Plots**.", icon="⚠️") # Changed to warning icon
                     else:
                         # If groups ARE assigned, show a success message
                         st.success("✅ Groups assigned. You can modify them in the 'Setup' section below. When ready, proceed to Statistical Analysis.", icon="👍")
