@@ -50,13 +50,40 @@ st.markdown("""
 
 # Constants
 PARAMETER_UNITS = {
+    # Existing Metabolic & Feed
     "VO2": "ml/kg/hr",
     "VCO2": "ml/kg/hr",
     "RER": "ratio",
     "HEAT": "kcal/hr",
+    "FEED": "g", # Represents FEED1 ACC
+
+    # Activity (Existing X + New Y/Z)
     "XTOT": "counts",
     "XAMB": "counts",
-    "FEED": "g"
+    "YTOT": "counts",
+    "YAMB": "counts",
+    "ZTOT": "counts",
+    "ZAMB": "counts",
+
+    # Gas Concentrations
+    "O2IN": "%",
+    "O2OUT": "%",
+    "CO2IN": "%",
+    "CO2OUT": "%",
+
+    # Delta Gas Concentrations
+    "DO2": "%",
+    "DCO2": "%",
+
+    # Environmental
+    "FLOW": "lpm",      # Liters per minute
+    "PRESSURE": "mmhg", # Millimeters of mercury
+
+    # Accumulated Gases (Assuming Liters - VERIFY IF POSSIBLE)
+    "ACCCO2": "l",      # Accumulated CO2 (Liters)
+    "ACCO2": "l"       # Accumulated O2 (Liters) - Naming might be confusing, often O2 is consumption
+                       # Verify if ACCO2 truly exists or if it's typically calculated.
+                       # Let's keep it for now based on samples.
 }
 
 GROUP_COLORS = {
@@ -72,13 +99,38 @@ GROUP_COLORS = {
 
 # Add parameter_descriptions dictionary
 parameter_descriptions = {
-    "VO2": "Oxygen consumption (ml/kg/hr)",
-    "VCO2": "Carbon dioxide production (ml/kg/hr)",
-    "RER": "Respiratory exchange ratio",
-    "HEAT": "Heat production (kcal/hr)",
-    "XTOT": "Total activity counts",
-    "XAMB": "Ambulatory activity counts",
-    "FEED": "Food intake (g)"
+    # Existing Metabolic & Feed
+    "VO2": "Oxygen consumption rate (ml/kg/hr)",
+    "VCO2": "Carbon dioxide production rate (ml/kg/hr)",
+    "RER": "Respiratory Exchange Ratio (VCO2/VO2)",
+    "HEAT": "Calculated heat production (kcal/hr)",
+    "FEED": "Accumulated food intake (g)", # Clarify it's Accumulated
+
+    # Activity (Existing X + New Y/Z)
+    "XTOT": "Total X-axis activity (counts)",
+    "XAMB": "Ambulatory X-axis activity (counts)",
+    "YTOT": "Total Y-axis activity (counts)",
+    "YAMB": "Ambulatory Y-axis activity (counts)",
+    "ZTOT": "Total Z-axis activity (rearing/climbing, counts)", # Add context for Z
+    "ZAMB": "Ambulatory Z-axis activity (rearing/climbing, counts)", # Add context for Z
+
+    # Gas Concentrations
+    "O2IN": "Inlet Oxygen concentration (%)",
+    "O2OUT": "Outlet Oxygen concentration (%)",
+    "CO2IN": "Inlet Carbon Dioxide concentration (%)",
+    "CO2OUT": "Outlet Carbon Dioxide concentration (%)",
+
+    # Delta Gas Concentrations
+    "DO2": "Delta O2 concentration (O2IN - O2OUT, %)",
+    "DCO2": "Delta CO2 concentration (CO2OUT - CO2IN, %)", # Note typical calculation order
+
+    # Environmental
+    "FLOW": "Air flow rate through cage (lpm)",
+    "PRESSURE": "Barometric pressure (mmhg)",
+
+    # Accumulated Gases
+    "ACCCO2": "Accumulated CO2 production (l)",
+    "ACCO2": "Accumulated O2 consumption (l)" # Assumed definition
 }
 
 
@@ -410,6 +462,12 @@ with st.sidebar:
                 del st.session_state[key]
         # No explicit rerun needed here, Streamlit handles it on widget change
     st.markdown(f"##### Upload Data File for: **{parameter}**")
+    if parameter == "FEED":
+        st.warning(
+            "⚠️ **Important:** For Feed data, please ensure you upload the **'FEED1 ACC.CSV'** file. "
+            "The regular 'FEED1.CSV' file can be prone to errors (e.g., from animals interacting with the sensor).",
+            icon="❗"
+        )
     uploaded_file = st.file_uploader(
         f"Upload {parameter} CSV",
         type="csv",
@@ -510,55 +568,129 @@ def style_dataframe(df):
     
     return df.style.apply(highlight_outliers)
 
+import re
+import io
+
+import re
+import io
+
 def verify_file_type(file, expected_type):
     """
-    Verify if uploaded file matches expected parameter type for CLAMS data files.
-    
+    Verify if uploaded file matches expected parameter type by checking the header.
+    Reads header line-by-line until ':DATA' is found or a safe limit is reached.
+    Improved parameter line detection and base name extraction.
+
     Args:
-        file: The uploaded file object
-        expected_type: The expected parameter type (e.g., 'VO2', 'RER', etc.)
-        
+        file: The uploaded file object.
+        expected_type: The parameter key selected by the user (e.g., "VO2", "FLOW").
+
     Returns:
         tuple: (is_valid: bool, message: str)
+             is_valid=True means proceed with processing.
+             message contains warnings or errors.
     """
     try:
-        content = file.read().decode()
+        # --- Read header line-by-line ---
+        file_parameter_full = None
+        has_parameter_file_tag = False
+        has_data_tag = False
+        max_header_lines = 500 # Increased limit
+        line_count = 0
+
         file.seek(0)
-        
-        # First line should identify this as a CLAMS/Oxymax file
-        first_line = content.split('\n')[0].strip()
-        if 'PARAMETER File' not in first_line:
-            return False, "File format not recognized. Expected CLAMS/Oxymax parameter file."
-            
-        # Look for :DATA marker which should be present in all CLAMS files
-        if ':DATA' not in content:
-            return False, "File structure not recognized. Missing :DATA marker."
-        
-        # If the file is valid CLAMS format, always process it
-        # Just warn if parameter type doesn't match exactly
-        content_lower = content.lower()
-        expected_lower = expected_type.lower()
-        
-        # Handle common unit variations
-        expected_patterns = [
-            f"{expected_lower}",                 # Basic parameter name
-            f"{expected_lower} (ml/kg/hr)",      # VO2/VCO2
-            f"{expected_lower} (ratio)",         # RER
-            f"{expected_lower} (kcal/hr)",       # HEAT
-            f"{expected_lower} (counts)",        # XTOT/XAMB
-            f"{expected_lower} (g)"              # FEED
-        ]
-        
-        if any(pattern in content_lower for pattern in expected_patterns):
-            return True, ""
+        wrapper = io.TextIOWrapper(file, encoding='utf-8', errors='ignore')
+
+        for line in wrapper:
+            line_strip = line.strip()
+            line_count += 1
+
+            # Check for essential tags
+            if line_count == 1 and 'PARAMETER File' in line_strip:
+                has_parameter_file_tag = True
+
+            # Use re.match to anchor search to START for the parameter line
+            if file_parameter_full is None:
+                match = re.match(r"Param(?:e?)ter[\s,\t]+\"?(.*?)\"?$", line_strip, re.IGNORECASE)
+                if match:
+                    file_parameter_full = match.group(1).strip()
+
+            if ':DATA' in line_strip:
+                has_data_tag = True
+                break
+
+            if line_count > max_header_lines:
+                break
+
+        file.seek(0)
+        wrapper.detach()
+
+        # --- Perform validation based on findings ---
+        if not has_parameter_file_tag:
+             return False, "File format not recognized. Expected 'PARAMETER File' tag in the first line."
+        if not has_data_tag:
+             if line_count > max_header_lines:
+                 return False, f"File structure error: ':DATA' marker not found within the first {max_header_lines} lines. File might be corrupt or incomplete."
+             else:
+                 return False, "File structure error: ':DATA' marker not found."
+
+        # --- Check parameter match ---
+        file_parameter_name = None
+        match_status = "No Match" # For debugging
+
+        if file_parameter_full:
+            # --- Revised Base Name Extraction ---
+            # Try to capture the part before the first opening parenthesis '(', if it exists.
+            # Allow letters, numbers, spaces. Strip trailing space.
+            base_name_match = re.match(r"([a-zA-Z0-9\s]+)(?:\s*\(.*)?", file_parameter_full)
+            if base_name_match:
+                file_parameter_name = base_name_match.group(1).strip() # Get only the first group
+
+                # --- Debug Print (Optional - uncomment to see parsing) ---
+                # print(f"DEBUG: Full='{file_parameter_full}', Base='{file_parameter_name}', Expected='{expected_type}'")
+
+                # Special case: Handle "FEED1 ACC" vs "FEED" selection
+                if expected_type == "FEED" and file_parameter_name.upper() == "FEED1 ACC":
+                    match_status = "FEED Match"
+                    return True, ""
+
+                # General case: Compare extracted base name with user selection
+                if file_parameter_name.strip().upper() == expected_type.strip().upper():
+                    match_status = "Exact Match"
+                    return True, ""
+            else:
+                # Failed to parse base name even though file_parameter_full was found
+                match_status = "Base Name Parse Failed"
         else:
-            # File appears to be valid CLAMS data, but parameter type might not match
-            return True, f"Note: Selected parameter type '{expected_type}' not explicitly found in file uploaded, but file appears to be valid CLAMS data."
-            
+            match_status = "Paramter Line Not Found"
+
+
+        # --- Construct and return warning if no match ---
+        # Only issue warning if we haven't returned True,"" above
+        warning_source = ""
+        if not file_parameter_full:
+            warning_source = "parameter line ('Paramter ...') not found or unreadable in header"
+        elif file_parameter_name:
+             # Show what was parsed if it exists, even if it didn't match
+             warning_source = f"file header indicates '{file_parameter_full}' (parsed base name as '{file_parameter_name}')"
+        else:
+             # file_parameter_full exists, but base name parsing failed
+             warning_source = f"file header indicates '{file_parameter_full}' (could not parse base name)"
+
+        warning_message = (
+            f"Note: Parameter mismatch? Selected '{expected_type}', but {warning_source}. Match Status: {match_status}. " # Added Match Status
+            "Processing anyway, but please verify."
+        )
+        return True, warning_message
+
+
     except UnicodeDecodeError:
-        return False, "File cannot be read. Please ensure it's a valid CSV file."
+        try: file.seek(0)
+        except: pass
+        return False, "File cannot be read. Please ensure it's a valid text/CSV file (UTF-8 encoding preferred)."
     except Exception as e:
-        return False, f"Error verifying file: {str(e)}"
+        try: file.seek(0)
+        except: pass
+        return False, f"Error verifying file header: {str(e)}"
     
 # Function to get color for any group name (handles custom group names)
 def get_group_color(group_name, default_color="#AAAAAA"):
@@ -1158,44 +1290,144 @@ def process_clams_data(file, parameter_type):
         df_24h['is_light'] = (df_24h['hour'] >= light_start) & (df_24h['hour'] < light_end)
         
         # Calculate results based on parameter type
-        if parameter_type in ["XTOT", "XAMB"]:
-            results = df_24h.groupby(['cage', 'is_light'])['value'].agg([
-                ('Average Activity', 'mean'),
-                ('Peak Activity', 'max'),
-                ('Total Counts', 'sum')
-            ]).unstack()
+        if parameter_type in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]: # UPDATED list
+            # --- Activity Parameter Calculations ---
+            results = df_24h.groupby(['cage', 'is_light'])['value'].agg(
+                # Use underscores temporarily for valid names before renaming
+                Average_Activity='mean',
+                Peak_Activity='max',
+                Total_Counts='sum'
+            ).unstack(fill_value=0) # fill_value=0 makes sense for counts
 
-            # Rename columns exactly as in Colab
-            new_columns = []
-            for col in results.columns:
-                metric, is_light = col
-                prefix = "True" if is_light else "False"
-                new_columns.append(f"{prefix} ({metric})")
-            results.columns = new_columns
+            # Flatten MultiIndex columns and rename descriptively
+            new_columns = {}
+            if results.columns.nlevels > 1: # Check if unstack created MultiIndex
+                for metric, is_light in results.columns:
+                    cycle_name = "Light" if is_light else "Dark"
+                    # Directly create the final desired column name with spaces
+                    # Replace underscores in the metric name itself before joining
+                    metric_name_cleaned = metric.replace("_", " ")
+                    new_columns[(metric, is_light)] = f"{cycle_name} {metric_name_cleaned}" # Combine with cycle name using a space
+                results.columns = list(new_columns.values()) # Assign the list of corrected names directly
+                # Removed the redundant .rename() step here
+            else:
+                # Handle cases where unstack might not create MultiIndex (e.g., only one cycle present)
+                # This part might need refinement based on edge case testing
+                st.warning("Activity data structure unexpected after grouping. Columns might be inaccurate.")
 
-            # Add 24h calculations
-            results['24h Average'] = df_24h.groupby('cage')['value'].mean()
-            results['24h Total Counts'] = df_24h.groupby('cage')['value'].sum()
 
-        elif parameter == "FEED":
-            results = df_24h.groupby(['cage', 'is_light'])['value'].agg([
-                ('Total Intake', 'sum'),
-                ('Average Rate', 'mean'),
-                ('Peak Rate', 'max')
-            ]).unstack()
-            
-            # Rename columns to match Colab
-            new_columns = []
-            for col in results.columns:
-                metric, is_light = col
-                suffix = "Light" if is_light else "Dark"
-                new_columns.append(f"{metric} ({suffix})")
-            results.columns = new_columns
+            # Calculate 24h aggregates separately
+            results_24h_avg = df_24h.groupby('cage')['value'].mean()
+            results_24h_sum = df_24h.groupby('cage')['value'].sum()
+            results['24h Average'] = results_24h_avg
+            results['24h Total Counts'] = results_24h_sum
 
-        else:  
+            # Fill NaNs that might arise from merging or if a cage had no data
+            results = results.fillna(0)
+            # --- TEMPORARY DEBUGGING ---
+            if parameter_type in ["YTOT", "YAMB", "ZTOT", "ZAMB"]:
+                st.warning(f"DEBUG: Final columns for {parameter_type}: {results.columns.tolist()}")
+                st.dataframe(results.head()) # Show first few rows for context
+            # --- END DEBUGGING ---
+
+        elif parameter_type == "FEED": # Assumes FEED is FEED1 ACC
+            # --- Feed Parameter Calculations ---
+            grouped = df_24h.groupby(['cage', 'is_light'])['value']
+            # Calculate Total Intake (sum) and Average Rate (mean - interpreted as rate over intervals)
+            # Peak Rate (max of accumulated value) might not be intuitive, let's keep mean and sum.
+            results = pd.concat({
+                'Total_Intake': grouped.sum(),
+                'Average_Interval_Value': grouped.mean(), # Average reading during cycle
+            }, axis=1).unstack(fill_value=0)
+
+            # Flatten MultiIndex columns and rename descriptively
+            new_columns = {}
+            if results.columns.nlevels > 1:
+                for metric, is_light in results.columns:
+                    cycle_name = "Light" if is_light else "Dark"
+                    # Directly create the final desired column name with spaces
+                    metric_name_cleaned = metric.replace("_", " ") # Clean metric name
+                    new_columns[(metric, is_light)] = f"{cycle_name} {metric_name_cleaned}" # Combine
+                results.columns = list(new_columns.values()) # Assign directly
+            else:
+                st.warning("Feed data structure unexpected after grouping. Columns might be inaccurate.")
+
+            # Calculate 24h total intake
+            # For FEED ACC, the total accumulated over the period is the LAST value minus the FIRST value
+            # Or simply the SUM if the ACC resets (need to confirm file behavior)
+            # Let's assume it's sum for now, similar to activity, but this might need revisit
+            results['Total Intake (Period)'] = df_24h.groupby('cage')['value'].sum()
+            results = results.fillna(0)
+
+        elif parameter_type in ["ACCCO2", "ACCO2"]:
+            # --- Accumulated Gas Calculations (Net Change) ---
+            # We need the first and last value for each cage within each cycle/period
+            # Sort data by timestamp first to ensure 'first' and 'last' are correct
+            df_24h_sorted = df_24h.sort_values(by=['cage', 'timestamp'])
+
+            # Group by cage and light/dark cycle, get first and last value
+            cycle_bounds = df_24h_sorted.groupby(['cage', 'is_light'])['value'].agg(['first', 'last'])
+
+            # Calculate the difference (last - first) for each cycle
+            # Need to handle cases where a cage might only have data in one cycle (unstack will create NaN)
+            cycle_diff = (cycle_bounds['last'] - cycle_bounds['first']).unstack()
+
+            # Rename columns for clarity
+            cols_rename_acc = {}
+            if True in cycle_diff.columns: # True corresponds to Light cycle (is_light=True)
+                cols_rename_acc[True] = 'Light Net Accumulated'
+            if False in cycle_diff.columns: # False corresponds to Dark cycle
+                cols_rename_acc[False] = 'Dark Net Accumulated'
+            results = cycle_diff.rename(columns=cols_rename_acc)
+
+            # Calculate Total Net Accumulated for the entire period
+            total_bounds = df_24h_sorted.groupby('cage')['value'].agg(['first', 'last'])
+            results['Total Net Accumulated (Period)'] = total_bounds['last'] - total_bounds['first']
+
+            # Fill missing values (e.g., if a cycle had no data) with 0
+            results = results.fillna(0).round(4) # Round accumulated values nicely
+
+        else:
+            # --- Default Calculations (Metabolic, Gas, Environmental - Averages) ---
+            # Ensure this is indented correctly, matching the `elif` lines above
             results = df_24h.groupby(['cage', 'is_light'])['value'].mean().unstack()
-            results.columns = ['Dark Average', 'Light Average']
-            results['Total Average'] = (results['Dark Average'] + results['Light Average']) / 2
+
+            # Define potential column names based on boolean index
+            dark_col_temp_name = False # column name after unstack if dark exists
+            light_col_temp_name = True # column name after unstack if light exists
+            final_dark_col = 'Dark Average'
+            final_light_col = 'Light Average'
+
+            # Rename columns conditionally if they exist
+            cols_to_rename = {}
+            if dark_col_temp_name in results.columns:
+                cols_to_rename[dark_col_temp_name] = final_dark_col
+            if light_col_temp_name in results.columns:
+                cols_to_rename[light_col_temp_name] = final_light_col
+            results = results.rename(columns=cols_to_rename)
+
+            # Calculate Total Average based on available renamed columns
+            if final_dark_col in results.columns and final_light_col in results.columns:
+                # For average-based params, Total Average is the mean of Light and Dark Averages
+                results['Total Average'] = results[[final_dark_col, final_light_col]].mean(axis=1)
+            elif final_dark_col in results.columns:
+                results['Total Average'] = results[final_dark_col] # Total is just Dark if only Dark exists
+            elif final_light_col in results.columns:
+                results['Total Average'] = results[final_light_col] # Total is just Light if only Light exists
+            else:
+                # If neither Dark nor Light columns were created (e.g., no data after filter)
+                # Calculate overall mean directly as fallback
+                overall_mean = df_24h.groupby('cage')['value'].mean()
+                results['Total Average'] = overall_mean
+
+            # Apply rounding based on parameter type AFTER calculations
+            if parameter_type == "RER":
+                results = results.round(3)
+            else:
+                results = results.round(2) # Default rounding for others
+
+            # Fill any potential NaNs arising from calculations or merges (especially Total Avg)
+            results = results.fillna(0)
 
         # Add subject IDs
         results['Subject ID'] = pd.Series(subject_map)
@@ -1703,23 +1935,282 @@ tab1, tab2, tab4, tab3 = st.tabs(["📊 Overview", "📈 Statistical Analysis", 
 with tab1:
     # Only show welcome message if no file is uploaded
     if uploaded_file is None:
-        st.markdown("""
-        ## Welcome to CLAMSer 
+        # --- Simplified Welcome Screen ---
 
-        This tool analyzes metabolic data from Comprehensive Lab Animal Monitoring System (CLAMS) files.
+        st.markdown("## Welcome to CLAMSer!")
+        st.markdown("Streamline your Oxymax-CLAMS metabolic data analysis. Get from raw CSV to insightful results and plots quickly and easily.")
+              
+        # --- Guiding Questions Section ---
+        with st.expander("❓ What kind of research questions can CLAMSer help with?", expanded=False):
+            st.markdown("""
+            Before starting, think about what you want to learn. This tool helps explore common CLAMS analysis goals:
 
-        **Getting Started:**
-        1. Upload your CLAMS data file using the sidebar
-        2. Select the parameter type (VO2, VCO2, RER, etc.)
-        3. Choose your preferred time window
-        4. Explore the results across the different tabs.
+        *   **Overall Energy Expenditure?**
+            *   *Analyze `VO2`, `VCO2`, and `HEAT` to see group differences or treatment effects.*
+        *   **Fuel Source Utilization?**
+            *   *Examine `RER` patterns to see if animals are burning fats vs. carbs.*
+        *   **Activity Levels & Patterns?**
+            *   *Compare `XTOT`, `XAMB`, `YTOT`, `YAMB`, `ZTOT`, `ZAMB` between groups or light/dark cycles.*
+        *   **Feeding Behavior?**
+            *   *Analyze `FEED` (use FEED1 ACC file!) to quantify intake amounts and timing.*
+        *   **Circadian Rhythms?**
+            *   *Visualize 24-hour patterns for any parameter to see time-of-day effects.*
+        *   **Treatment Effects on Metabolism/Activity?**
+            *   *Use the **Statistical Analysis** tab for rigorous group comparisons (ANOVA, t-tests).*
 
-        The Overview tab provides summary metrics, 24-hour patterns, and detailed data tables for your CLAMS data.
+        CLAMSer aims to help you explore these questions through clear visualizations, summary tables, and statistical tools.
         """)
+        # --- End Guiding Questions Section ---
+
+        # Color chosen: a slightly lighter blue-gray from the theme #262d3d (adjust if needed)
+        step_style = "background-color: #262d3d; color: white; padding: 5px 10px; border-radius: 5px; display: inline-block; margin-bottom: 5px;"
+
+        st.markdown(f"<div style='{step_style}'>Step 1: Configure Analysis (Sidebar)</div>", unsafe_allow_html=True)
+        st.markdown("""
+        *   **(Required)** Go to the **sidebar** on the left.
+        *   Under **'Select Parameter'**, choose the data type you want to analyze (e.g., `VO2`, `HEAT`, `XTOT`). Descriptions are provided.
+        *   Under **'Select Time Window'**, choose how much of the *end* of your dataset to analyze (e.g., `Last 24 Hours`, `Last 7 Days`).
+        *   **(Optional)** Adjust **'Light/Dark Cycle'** times if your schedule differs from the default (7 AM - 7 PM).
+        *   **(Optional)** For `VO2`, `VCO2`, or `HEAT`, you can enable **'Metabolic Normalization'** if you have lean mass data.
+        """, unsafe_allow_html=True) # Add unsafe_allow_html here if needed, but likely not for bullets
+
+        st.markdown(f"<div style='{step_style}'>Step 2: Upload Data (Sidebar)</div>", unsafe_allow_html=True)
+        st.markdown("""
+        *   **(Required)** Still in the **sidebar**, find the **'Upload Data File'** section.
+        *   Click **'Browse files'** and select the **correct CSV file** that matches the parameter you chose in Step 1.
+            *   ⚠️ **Important:** For Food Intake analysis, select `FEED` in Step 1 and upload the **`FEED1 ACC.CSV`** file!
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"<div style='{step_style}'>Step 3: Assign Groups & Lean Mass (Overview Tab)</div>", unsafe_allow_html=True)
+        st.markdown("""
+        *   **(Required for Stats/Plots)** Once your data loads, stay on this **'📊 Overview'** tab.
+        *   Scroll down to the **'⚙️ Setup: Groups & Lean Mass'** section.
+        *   Click **'Yes'** to confirm subjects and assign animals to experimental groups. This is needed for statistical analysis and group plots.
+        *   **(Optional)** If you enabled lean mass adjustment in Step 1, enter the individual lean masses here.
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"<div style='{step_style}'>Step 4: Explore Results!</div>", unsafe_allow_html=True)
+        st.markdown("""
+        *   Review summary tables and plots here in the **'📊 Overview'** tab.
+        *   Perform statistical comparisons in the **'📈 Statistical Analysis'** tab.
+        *   Generate publication-quality graphs in the **'📄 Publication Plots'** tab.
+        *   Learn more about the calculations in the **'🧪 Guide & Verification'** tab.
+        """, unsafe_allow_html=True) # Renamed tab here
+
+        st.markdown("---") # Visual separator
+        st.success("Ready? Start with **Step 1** in the sidebar!")
+        # --- End of Simplified Welcome Screen ---
     else:
         # When file is uploaded, just show the header followed by parameter guide
         st.header("📊 Overview")
-        
+        # --- Parameter Information Expander --- (Moved Temporarily - REMAINS HERE FOR NOW)
+        st.markdown("---") # Visual separator
+        with st.expander(f"ℹ️ Understanding Parameter: {parameter_descriptions.get(parameter, parameter)}"):
+
+            # --- Define info using a structured dictionary ---
+            parameter_insights = {
+                "VO2": {
+                    "description": "Rate of Oxygen Consumption (ml/kg/hr), reflecting energy expenditure.",
+                    "core_questions": [
+                        "What is the overall metabolic rate of the animals?",
+                        "Does the treatment/condition alter energy expenditure?",
+                        "Are there differences in metabolic rate between light and dark cycles?",
+                        "How does VO2 relate to activity or food intake?"
+                    ]
+                },
+                "VCO2": {
+                    "description": "Rate of Carbon Dioxide Production (ml/kg/hr), reflecting metabolic activity.",
+                    "core_questions": [
+                        "How much CO2 are the animals producing?",
+                        "Does the treatment/condition affect CO2 output?",
+                        "How does VCO2 change across the light/dark cycle?",
+                        "Used in conjunction with VO2 to calculate RER."
+                    ]
+                },
+                "RER": {
+                    "description": "Respiratory Exchange Ratio (VCO2/VO2), indicating fuel source.",
+                    "core_questions": [
+                        "Are the animals primarily burning fats (RER ≈ 0.7) or carbohydrates (RER ≈ 1.0)?",
+                        "Does the treatment/diet shift fuel preference?",
+                        "Is there a circadian rhythm in fuel utilization (e.g., higher RER in active/feeding phase)?",
+                        "Does RER exceed 1.0 (suggesting lipogenesis)?"
+                    ]
+                },
+                "HEAT": {
+                    "description": "Estimated Heat Production (kcal/hr), calculated from VO2/VCO2.",
+                    "core_questions": [
+                        "What is the total energy expenditure in caloric terms?",
+                        "Are there group differences in overall energy expenditure?",
+                        "How does total heat production change across the light/dark cycle?",
+                        "Does it correlate strongly with VO2?"
+                    ]
+                },
+                "FEED": { # Represents FEED1 ACC
+                    "description": "Accumulated Food Intake (grams). *Use FEED1 ACC.CSV.*",
+                    "core_questions": [
+                        "How much food did the animals consume in total (e.g., over 24h)?",
+                        "Do groups differ in their total food intake?",
+                        "Is feeding concentrated in the light or dark cycle?",
+                        "How does food intake relate to body weight changes or metabolic parameters?"
+                    ]
+                },
+                "XTOT": {
+                    "description": "Total X-axis Activity (counts), includes fine + ambulatory movements.",
+                    "core_questions": [
+                        "What is the overall level of horizontal (side-to-side) activity?",
+                        "Are there group differences in total X-axis movement?",
+                        "Is activity higher during the light or dark cycle?",
+                        "How does it compare to XAMB (ambulatory counts)?"
+                    ]
+                },
+                "XAMB": {
+                    "description": "Ambulatory X-axis Activity (counts), reflects horizontal locomotion.",
+                    "core_questions": [
+                        "How much are the animals moving across the cage horizontally?",
+                        "Does the treatment affect purposeful horizontal movement?",
+                        "Is locomotion higher during the light or dark cycle?",
+                        "Is the XAMB/XTOT ratio different between groups?"
+                    ]
+                },
+                "YTOT": {
+                    "description": "Total Y-axis Activity (counts), includes fine + ambulatory front-to-back movements.",
+                    "core_questions": [
+                        "What is the overall level of front-to-back activity?",
+                        "Are there group differences in total Y-axis movement?",
+                        "Is activity higher during the light or dark cycle?",
+                        "How does it compare to YAMB?"
+                    ]
+                },
+                "YAMB": {
+                    "description": "Ambulatory Y-axis Activity (counts), reflects front-to-back locomotion.",
+                    "core_questions": [
+                        "How much are the animals moving across the cage from front-to-back?",
+                        "Does the treatment affect purposeful front-to-back movement?",
+                        "Is locomotion higher during the light or dark cycle?",
+                        "Is the YAMB/YTOT ratio different between groups?"
+                    ]
+                },
+                "ZTOT": {
+                    "description": "Total Z-axis Activity (counts), includes fine movements + rearing/climbing.",
+                    "core_questions": [
+                        "What is the overall level of vertical activity (including small movements)?",
+                        "Are there group differences in total Z-axis movement?",
+                        "Is vertical activity higher during the light or dark cycle?",
+                        "How does it compare to ZAMB?"
+                    ]
+                },
+                "ZAMB": {
+                    "description": "Ambulatory Z-axis Activity (counts), reflects vertical locomotion (rearing/climbing).",
+                    "core_questions": [
+                        "How frequently are the animals rearing or climbing?",
+                        "Does the treatment affect exploratory vertical movement?",
+                        "Is rearing/climbing higher during the light or dark cycle?",
+                        "Does ZAMB correlate with specific behaviors?"
+                    ]
+                },
+                "FLOW": {
+                    "description": "Air Flow Rate (lpm). *System parameter, not biological.*",
+                    "core_questions": [
+                        "Is the airflow through each cage stable and consistent?",
+                        "Does the measured flow match the system's setpoint?",
+                        "Are there sudden drops or spikes indicating potential leaks/blockages?",
+                        "(Not typically used for comparing biological groups)."
+                    ]
+                },
+                "PRESSURE": {
+                    "description": "Barometric Pressure (mmhg). *Environmental parameter.*",
+                    "core_questions": [
+                        "What was the atmospheric pressure during the experiment?",
+                        "Is the pressure reading consistent across simultaneous measurements?",
+                        "(Used internally for gas law corrections by CLAMS; not for biological group comparison)."
+                    ]
+                },
+                "O2IN": {
+                    "description": "Inlet O2 Concentration (%). *System baseline.*",
+                    "core_questions": [
+                        "Is the incoming air O2 level stable and correct (approx. 20.9%)?",
+                        "Are there any drifts suggesting analyzer issues or problems with the air source?",
+                        "(Diagnostic parameter, not for biological group comparison)."
+                    ]
+                },
+                "CO2IN": {
+                    "description": "Inlet CO2 Concentration (%). *System baseline.*",
+                    "core_questions": [
+                        "Is the incoming air CO2 level stable and low (approx. 0.04%)?",
+                        "Are there any unexpected increases suggesting leaks or analyzer issues?",
+                        "(Diagnostic parameter, not for biological group comparison)."
+                    ]
+                },
+                "O2OUT": {
+                    "description": "Outlet O2 Concentration (%). Reflects O2 remaining after respiration.",
+                    "core_questions": [
+                        "How much lower is O2OUT compared to O2IN?",
+                        "Do groups differ in their average O2OUT (indicating different consumption)?",
+                        "Does O2OUT fluctuate with the light/dark cycle?",
+                        "(Raw data used to calculate VO2)."
+                    ]
+                },
+                "CO2OUT": {
+                    "description": "Outlet CO2 Concentration (%). Reflects CO2 added by respiration.",
+                    "core_questions": [
+                        "How much higher is CO2OUT compared to CO2IN?",
+                        "Do groups differ in their average CO2OUT (indicating different production)?",
+                        "Does CO2OUT fluctuate with the light/dark cycle?",
+                        "(Raw data used to calculate VCO2)."
+                    ]
+                },
+                "DO2": {
+                    "description": "Delta O2 Concentration (O2IN - O2OUT, %). Directly related to VO2.",
+                    "core_questions": [
+                        "What is the magnitude of oxygen extraction by the animals?",
+                        "Do groups differ significantly in their DO2?",
+                        "Are there cyclical changes in DO2?",
+                        "(Analysis is very similar to VO2)."
+                    ]
+                },
+                "DCO2": {
+                    "description": "Delta CO2 Concentration (CO2OUT - CO2IN, %). Directly related to VCO2.",
+                    "core_questions": [
+                        "What is the magnitude of carbon dioxide addition by the animals?",
+                        "Do groups differ significantly in their DCO2?",
+                        "Are there cyclical changes in DCO2?",
+                        "(Analysis is very similar to VCO2)."
+                    ]
+                },
+                "ACCCO2": {
+                    "description": "Accumulated CO2 Production (liters). *Needs correct calculation (total per period).*",
+                    "core_questions": [
+                        "What was the total volume of CO2 produced during the light/dark cycle or 24h?",
+                        "Do groups differ in their total CO2 output over the measurement period?",
+                        "(Complements VCO2 rate measurement)."
+                    ]
+                },
+                "ACCO2": {
+                    "description": "Accumulated O2 Consumption (liters). *Needs correct calculation (total per period).*",
+                    "core_questions": [
+                        "What was the total volume of O2 consumed during the light/dark cycle or 24h?",
+                        "Do groups differ in their total O2 usage over the measurement period?",
+                        "(Complements VO2 rate measurement)."
+                    ]
+                }
+                # Add new parameters here in the future
+            }
+
+            # Get the specific info for the selected parameter
+            selected_info = parameter_insights.get(parameter)
+
+            if selected_info:
+                st.markdown(f"**Description:** {selected_info['description']}")
+                st.markdown("**Core questions this parameter helps answer:**")
+                for question in selected_info['core_questions']:
+                    st.markdown(f"- {question}")
+            else:
+                # Fallback message if parameter not in dictionary yet
+                st.markdown(f"Detailed information about interpreting **{parameter}** analysis will be added here.")
+
+        st.markdown("---") # Visual separator
+        # --- End Parameter Information Expander ---
+
     
     
 if uploaded_file is not None:
@@ -1748,7 +2239,7 @@ if uploaded_file is not None:
 
                     if not groups_assigned:
                         # If groups are NOT assigned, show a prominent warning message
-                        st.warning("👇 **Action Needed:** Please assign animals to groups in the **'Setup: Groups & Lean Mass'** section below to enable **Group-Based Analysis**, **Statistical Analysis** and **Publication Plots**.", icon="⚠️") # Changed to warning icon
+                        st.info("👇 **Action Needed:** Please assign animals to groups in the **'Setup: Groups & Lean Mass'** section below to enable **Group-Based Analysis**, **Statistical Analysis** and **Publication Plots**.", icon="⚠️") # Changed to warning icon
                     else:
                         # If groups ARE assigned, show a success message
                         st.success("✅ Groups assigned. You can modify them in the 'Setup' section below. When ready, proceed to Statistical Analysis.", icon="👍")
@@ -1769,80 +2260,257 @@ if uploaded_file is not None:
                     # Create a container for better styling
                     metrics_container = st.container()
                     with metrics_container:
-                        if parameter in ["XTOT", "XAMB"]:
-                            # Use equal width columns with proper spacing
-                            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-                            with col1:
-                                st.metric("Average Light Activity", 
-                                    f"{results['True (Average Activity)'].mean():.1f} {PARAMETER_UNITS[parameter]}")
-                            with col2:
-                                st.metric("Average Dark Activity", 
-                                    f"{results['False (Average Activity)'].mean():.1f} {PARAMETER_UNITS[parameter]}")
-                            with col3:
-                                st.metric("Peak Activity", 
-                                    f"{max(results['True (Peak Activity)'].max(), results['False (Peak Activity)'].max()):.0f} {PARAMETER_UNITS[parameter]}")
-                            with col4:
-                                st.metric("Total Activity", 
-                                    f"{(results['True (Total Counts)'] + results['False (Total Counts)']).sum():.0f} {PARAMETER_UNITS[parameter]}")
+                        # --- METRICS DISPLAY ---
+                        # Check if results exist and are not empty before trying to access columns
+                        if results is not None and not results.empty:
+                            try: # Add a try-except block for safety when accessing results
+                                if parameter in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]:
+                                    # --- Activity Metrics ---
+                                    # Use the NEW column names
+                                    light_avg_col = "Light Average Activity"
+                                    dark_avg_col = "Dark Average Activity"
+                                    light_peak_col = "Light Peak Activity"
+                                    dark_peak_col = "Dark Peak Activity"
+                                    light_total_col = "Light Total Counts"
+                                    dark_total_col = "Dark Total Counts"
+                                    overall_total_col = "24h Total Counts" # Use this for overall total
 
-                        elif parameter == "RER":
-                            # Equal column widths for balanced appearance
-                            col1, col2, col3 = st.columns([1, 1, 1])
-                            with col1:
-                                st.metric("Average Light RER", f"{results['Light Average'].mean():.3f}")
-                            with col2:
-                                st.metric("Average Dark RER", f"{results['Dark Average'].mean():.3f}")
-                            with col3:
-                                st.metric("Total Records", f"{len(raw_data):,}")
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    with col1:
+                                        # Check if column exists before accessing
+                                        if light_avg_col in results.columns:
+                                            st.metric("Avg Light Activity",
+                                                f"{results[light_avg_col].mean():.1f} {PARAMETER_UNITS[parameter]}")
+                                        else: st.metric("Avg Light Activity", "N/A")
+                                    with col2:
+                                        if dark_avg_col in results.columns:
+                                            st.metric("Avg Dark Activity",
+                                                f"{results[dark_avg_col].mean():.1f} {PARAMETER_UNITS[parameter]}")
+                                        else: st.metric("Avg Dark Activity", "N/A")
+                                    with col3:
+                                        # Calculate overall peak from Light and Dark peak columns
+                                        peak_val = 0
+                                        if light_peak_col in results.columns and dark_peak_col in results.columns:
+                                            peak_val = max(results[light_peak_col].max(), results[dark_peak_col].max())
+                                        elif light_peak_col in results.columns:
+                                            peak_val = results[light_peak_col].max()
+                                        elif dark_peak_col in results.columns:
+                                            peak_val = results[dark_peak_col].max()
+                                        st.metric("Peak Activity (Overall)", f"{peak_val:.0f} {PARAMETER_UNITS[parameter]}")
+
+                                    with col4:
+                                        if overall_total_col in results.columns:
+                                            # Sum the 24h total across all animals
+                                            st.metric("Total Activity (24h)",
+                                                f"{results[overall_total_col].sum():.0f} {PARAMETER_UNITS[parameter]}")
+                                        elif light_total_col in results.columns and dark_total_col in results.columns:
+                                            # Fallback: sum light and dark totals if 24h column missing
+                                            st.metric("Total Activity (L+D)",
+                                                f"{(results[light_total_col] + results[dark_total_col]).sum():.0f} {PARAMETER_UNITS[parameter]}")
+                                        else: st.metric("Total Activity", "N/A")
+
+
+                                elif parameter == "FEED": # Assumes FEED1 ACC
+                                    # --- Feed Metrics ---
+                                    # Use the NEW column names
+                                    light_intake_col = "Light Total Intake"
+                                    dark_intake_col = "Dark Total Intake"
+                                    light_avg_val_col = "Light Average Interval Value" # Changed name
+                                    dark_avg_val_col = "Dark Average Interval Value"  # Changed name
+                                    overall_total_col = "24h Total Intake"
+
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        if light_intake_col in results.columns:
+                                            # Show average TOTAL intake per animal in light phase
+                                            st.metric("Avg Total Light Intake",
+                                                    f"{results[light_intake_col].mean():.3f} {PARAMETER_UNITS[parameter]}")
+                                        else: st.metric("Avg Total Light Intake", "N/A")
+                                    with col2:
+                                        if dark_intake_col in results.columns:
+                                            # Show average TOTAL intake per animal in dark phase
+                                            st.metric("Avg Total Dark Intake",
+                                                    f"{results[dark_intake_col].mean():.3f} {PARAMETER_UNITS[parameter]}")
+                                        else: st.metric("Avg Total Dark Intake", "N/A")
+                                    with col3:
+                                        if overall_total_col in results.columns:
+                                            # Show overall average total intake per animal
+                                            st.metric("Avg Total Intake (24h)",
+                                                f"{results[overall_total_col].mean():.3f} {PARAMETER_UNITS[parameter]}")
+                                            st.caption(f"Total all animals: {results[overall_total_col].sum():.3f}g") # Add total sum too
+                                        elif light_intake_col in results.columns and dark_intake_col in results.columns:
+                                            # Fallback
+                                            st.metric("Avg Total Intake (L+D)",
+                                                f"{(results[light_intake_col] + results[dark_intake_col]).mean():.3f} {PARAMETER_UNITS[parameter]}")
+                                        else: st.metric("Avg Total Intake", "N/A")
+
+
+                                elif parameter == "RER":
+                                    # --- RER Metrics --- (Should still work as it uses Light/Dark Average)
+                                    col1, col2, col3 = st.columns([1, 1, 1])
+                                    light_avg_col = 'Light Average'
+                                    dark_avg_col = 'Dark Average'
+                                    with col1:
+                                        if light_avg_col in results.columns:
+                                            st.metric("Average Light RER", f"{results[light_avg_col].mean():.3f}")
+                                        else: st.metric("Average Light RER", "N/A")
+                                    with col2:
+                                        if dark_avg_col in results.columns:
+                                            st.metric("Average Dark RER", f"{results[dark_avg_col].mean():.3f}")
+                                        else: st.metric("Average Dark RER", "N/A")
+                                    with col3:
+                                        # Use len(results) for number of animals analyzed
+                                        st.metric("Animals Analyzed", f"{len(results)}")
+
+
+                                else:
+                                    # --- Default & Accumulated Gas Metrics ---
+                                    col1, col2, col3 = st.columns([1, 1, 1]) # Use 3 columns for layout
+
+                                    # Determine column names and labels based on specific parameter type within this group
+                                    if parameter in ["ACCCO2", "ACCO2"]:
+                                        light_col = 'Light Net Accumulated'
+                                        dark_col = 'Dark Net Accumulated'
+                                        total_col = 'Total Net Accumulated (Period)'
+                                        # Labels reflect the average of the *net change* during the period
+                                        light_label = f"Avg Light Net Acc. {parameter}"
+                                        dark_label = f"Avg Dark Net Acc. {parameter}"
+                                        total_label = f"Avg Total Net Acc. {parameter}"
+                                        rounding_format = "{:.4f}" # Use more decimal places for accumulated
+                                    else:
+                                        # Default parameters (Metabolic, other Gases, Env) use averages
+                                        light_col = 'Light Average'
+                                        dark_col = 'Dark Average'
+                                        total_col = 'Total Average'
+                                        light_label = f"Average Light {parameter}"
+                                        dark_label = f"Average Dark {parameter}"
+                                        total_label = f"Overall Avg {parameter}"
+                                        rounding_format = "{:.2f}" # Default rounding
+                                        if parameter == "RER":
+                                            rounding_format = "{:.3f}" # Specific rounding for RER
+
+                                    # Display metrics using the determined names and labels
+                                    with col1:
+                                        if light_col in results.columns:
+                                            avg_val = results[light_col].mean()
+                                            st.metric(light_label,
+                                                    f"{avg_val:{rounding_format.strip('{:}')}} {PARAMETER_UNITS.get(parameter, '')}")
+                                        else:
+                                            st.metric(light_label, "N/A")
+                                    with col2:
+                                        if dark_col in results.columns:
+                                            avg_val = results[dark_col].mean()
+                                            st.metric(dark_label,
+                                                    f"{avg_val:{rounding_format.strip('{:}')}} {PARAMETER_UNITS.get(parameter, '')}")
+                                        else:
+                                            st.metric(dark_label, "N/A")
+                                    with col3:
+                                        if total_col in results.columns:
+                                            avg_val = results[total_col].mean()
+                                            st.metric(total_label,
+                                                    f"{avg_val:{rounding_format.strip('{:}')}} {PARAMETER_UNITS.get(parameter, '')}")
+                                        else:
+                                            st.metric(total_label, "N/A")
+
+                            except KeyError as e:
+                                st.error(f"Error displaying metrics: Could not find expected column '{e}'. Check data processing results for parameter '{parameter}'.")
+                                st.dataframe(results.head()) # Show results head for debugging
+                            except Exception as e:
+                                st.error(f"An unexpected error occurred while displaying metrics: {e}")
+                                if results is not None: st.dataframe(results.head())
+
+                        else:
+                            st.warning("Metrics cannot be displayed. No results data available after processing.")
+                    
+                    # --- Calculate and Display Day/Night Pattern Insight ---
+                    day_night_ratio = None
+                    light_val_mean = None
+                    dark_val_mean = None
+                    light_col_name = None # Initialize column names
+                    dark_col_name = None
+
+                    try:
+                        # Step 1: Determine the correct column names based on the parameter
+                        if parameter in ["VO2", "VCO2", "HEAT", "RER"] or \
+                        parameter in ["O2IN", "O2OUT", "CO2IN", "CO2OUT", "DO2", "DCO2", "FLOW", "PRESSURE"] or \
+                        parameter in ["ACCCO2", "ACCO2"]: # Added ACCCO2/ACCO2 here explicitly
+
+                            # Further check *within* this block for Accumulated Gases
+                            if parameter in ["ACCCO2", "ACCO2"]:
+                                light_col_name = 'Light Net Accumulated'
+                                dark_col_name = 'Dark Net Accumulated'
+                            else:
+                                # Default/Metabolic/Other Gases use Averages
+                                light_col_name = 'Light Average'
+                                dark_col_name = 'Dark Average'
+
+                        elif parameter in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]:
+                            # Activity calculation uses these column names
+                            light_col_name = 'Light Average Activity'
+                            dark_col_name = 'Dark Average Activity'
 
                         elif parameter == "FEED":
-                            col1, col2, col3 = st.columns([1, 1, 1])
-                            with col1:
-                                st.metric("Average Light Rate", 
-                                        f"{results['Average Rate (Light)'].mean():.4f} {PARAMETER_UNITS[parameter]}")
-                            with col2:
-                                st.metric("Average Dark Rate", 
-                                        f"{results['Average Rate (Dark)'].mean():.4f} {PARAMETER_UNITS[parameter]}")
-                            with col3:
-                                st.metric("Total Feed", 
-                                        f"{(results['Total Intake (Light)'] + results['Total Intake (Dark)']).sum():.4f} {PARAMETER_UNITS[parameter]}")
+                            # Feed calculation compares average TOTAL intake per cycle
+                            light_col_name = 'Light Total Intake'
+                            dark_col_name = 'Dark Total Intake'
 
-                        else:  # VO2, VCO2, HEAT
-                            col1, col2, col3 = st.columns([1, 1, 1])
-                            with col1:
-                                st.metric(f"Average Light {parameter}", 
-                                        f"{results['Light Average'].mean():.2f} {PARAMETER_UNITS[parameter]}")
-                            with col2:
-                                st.metric(f"Average Dark {parameter}", 
-                                        f"{results['Dark Average'].mean():.2f} {PARAMETER_UNITS[parameter]}")
-                            with col3:
-                                st.metric("Total Records", f"{len(raw_data):,}")
+                        # Step 2: Check if columns exist and calculate means (No change needed here)
+                        if light_col_name and dark_col_name and \
+                        light_col_name in results.columns and dark_col_name in results.columns:
+                            light_val_mean = results[light_col_name].mean()
+                            dark_val_mean = results[dark_col_name].mean()
 
-                    # Get day/night ratio based on parameter type
-                    day_night_ratio = None
-                    if parameter in ["VO2", "VCO2", "HEAT", "RER"]:
-                        day_night_ratio = results['Light Average'].mean() / results['Dark Average'].mean()
-                    elif parameter in ["XTOT", "XAMB"]:
-                        day_night_ratio = results['True (Average Activity)'].mean() / results['False (Average Activity)'].mean() 
-                    elif parameter == "FEED":
-                        day_night_ratio = results['Average Rate (Light)'].mean() / results['Average Rate (Dark)'].mean()
+                            # Step 3: Calculate ratio safely (No change needed here)
+                            if pd.notna(light_val_mean) and pd.notna(dark_val_mean) and dark_val_mean != 0:
+                                day_night_ratio = light_val_mean / dark_val_mean
+                            elif pd.notna(light_val_mean) and pd.notna(dark_val_mean) and dark_val_mean == 0 and light_val_mean != 0:
+                                day_night_ratio = float('inf') # Handle division by zero if light is non-zero
+                            # Else: ratio remains None if means are NaN or both are zero
 
-                    # Display day/night insight if ratio could be calculated
-                    if day_night_ratio is not None:
+                        # else: If columns don't exist, means remain None, ratio remains None
+
+                    except Exception as e:
+                        # Catch unexpected errors during calculation
+                        st.warning(f"Could not calculate Day/Night pattern due to an error: {e}", icon="⚙️")
+                        day_night_ratio = None # Ensure it's None on error
+
+                    # Step 4: Display the insight message if ratio was calculated
+                    if day_night_ratio is not None and day_night_ratio != float('inf'):
                         direction = "higher" if day_night_ratio > 1 else "lower"
-                        percent_diff = abs(1 - day_night_ratio) * 100
-                        
-                        # For most parameters, lower during light is normal for nocturnal animals
-                        # But for FEED, higher during dark is normal
-                        normal_pattern = day_night_ratio < 1
+                        try:
+                            percent_diff = abs(1 - day_night_ratio) * 100
+                        except:
+                            percent_diff = 0 # Fallback
+
+                        # Determine the *expected* condition for a typical nocturnal pattern
+                        # True means we expect Dark > Light (ratio < 1)
+                        # False means we expect Light >= Dark (ratio >= 1) - less common biologically
+                        expect_dark_higher = None # Default: no strong expectation
                         if parameter == "FEED":
-                            normal_pattern = day_night_ratio < 1  # Food intake is normally higher during dark for nocturnal animals
-                        
-                        st.info(f"**Day/Night Pattern**: {parameter} is {percent_diff:.1f}% {direction} during light cycle compared to dark cycle, " + 
-                                ("suggesting normal nocturnal activity." if normal_pattern else "which may indicate altered circadian rhythm."))
-                    
+                            expect_dark_higher = True # Expect higher intake in dark
+                        elif parameter in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB", "VO2", "VCO2", "HEAT"]:
+                            expect_dark_higher = True # Expect higher activity/metabolism in dark
+                        elif parameter in ["ACCCO2", "ACCO2"]:
+                            expect_dark_higher = True # Expect higher net accumulation in dark (active) phase
 
+                        # Construct the message using the determined column names
+                        insight_text = f"**Day/Night Pattern**: Avg '{light_col_name}' is **{percent_diff:.1f}% {direction}** than Avg '{dark_col_name}'."
 
+                        # Add interpretation based on expected pattern
+                        if expect_dark_higher is not None:
+                            # Check if the actual data matches the expectation
+                            actual_dark_is_higher = (day_night_ratio < 1)
+                            if expect_dark_higher == actual_dark_is_higher:
+                                insight_text += " (Suggests typical nocturnal pattern)"
+                            else:
+                                insight_text += " (May suggest altered circadian pattern)"
+
+                        st.info(insight_text) # Display the final text
+
+                    elif day_night_ratio == float('inf'):
+                        st.info(f"**Day/Night Pattern**: Avg '{light_col_name}' has value, but Avg '{dark_col_name}' is zero.") # Updated to use variables
+                    # else: If day_night_ratio is still None, no message is displayed (e.g., columns missing, NaNs)
+          
                     # --- End of Lean Mass Content ---Create and display the visualization
                     # Create a time-based view instead of just hourly
                     # First create proper timeline data
