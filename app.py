@@ -346,11 +346,12 @@ with st.sidebar:
     time_window = st.radio(
         "Time Window",
         ["Last 24 Hours", "Last 48 Hours", "Last 72 Hours", "Last 7 Days", "Last 14 Days", "Custom Range", "Entire Dataset"],
+        index=6, # Index of "Entire Dataset" in the list (starting from 0)
         help="Choose analysis duration",
         key="time_window_radio",
         label_visibility="collapsed" # Hide label
     )
-
+    
     # Add custom range input if selected
     if time_window == "Custom Range":
         custom_days = st.number_input(
@@ -1330,35 +1331,68 @@ def process_clams_data(file, parameter_type):
                 st.dataframe(results.head()) # Show first few rows for context
             # --- END DEBUGGING ---
 
-        elif parameter_type == "FEED": # Assumes FEED is FEED1 ACC
-            # --- Feed Parameter Calculations ---
-            grouped = df_24h.groupby(['cage', 'is_light'])['value']
-            # Calculate Total Intake (sum) and Average Rate (mean - interpreted as rate over intervals)
-            # Peak Rate (max of accumulated value) might not be intuitive, let's keep mean and sum.
-            results = pd.concat({
-                'Total_Intake': grouped.sum(),
-                'Average_Interval_Value': grouped.mean(), # Average reading during cycle
-            }, axis=1).unstack(fill_value=0)
+        elif parameter_type == "FEED": # Assumes FEED1 ACC
 
-            # Flatten MultiIndex columns and rename descriptively
-            new_columns = {}
-            if results.columns.nlevels > 1:
-                for metric, is_light in results.columns:
-                    cycle_name = "Light" if is_light else "Dark"
-                    # Directly create the final desired column name with spaces
-                    metric_name_cleaned = metric.replace("_", " ") # Clean metric name
-                    new_columns[(metric, is_light)] = f"{cycle_name} {metric_name_cleaned}" # Combine
-                results.columns = list(new_columns.values()) # Assign directly
+            results_list = [] # To store results for each cage
+            processed_cages = df_24h['cage'].unique()
+
+            # Ensure data is sorted globally by cage and time first
+            df_24h_sorted = df_24h.sort_values(by=['cage', 'timestamp'])
+
+            for cage in processed_cages:
+                cage_data = df_24h_sorted[df_24h_sorted['cage'] == cage]
+                cage_results = {"Cage": cage} # Start dict for this cage's results
+
+                # --- Calculate Total Intake (Period) ---
+                if len(cage_data) > 1:
+                    total_intake = cage_data['value'].iloc[-1] - cage_data['value'].iloc[0]
+                    cage_results['Total Intake (Period)'] = total_intake
+                else:
+                    cage_results['Total Intake (Period)'] = 0 # Or np.nan if preferred
+
+            # ... (inside the for cage in processed_cages: loop) ...
+
+                # --- Calculate Light Cycle Intake ---
+                light_data = cage_data[cage_data['is_light']]
+                if len(light_data) > 1:
+                    light_intake = light_data['value'].iloc[-1] - light_data['value'].iloc[0]
+                    cage_results['Light Cycle Intake'] = light_intake
+                else:
+                    cage_results['Light Cycle Intake'] = 0
+
+                # --- Calculate Dark Cycle Intake ---
+                dark_data = cage_data[~cage_data['is_light']]
+                if len(dark_data) > 1:
+                    dark_intake = dark_data['value'].iloc[-1] - dark_data['value'].iloc[0]
+                    cage_results['Dark Cycle Intake'] = dark_intake
+                else:
+                    cage_results['Dark Cycle Intake'] = 0
+
+                # Append this cage's results to our list
+                results_list.append(cage_results)
+
+            # --- Create Final DataFrame ---
+            if results_list:
+                results = pd.DataFrame(results_list).set_index("Cage")
+
+                # Add Subject IDs (ensure subject_map uses the same cage format as results.index)
+                # Use .map() which is safer for potentially missing keys
+                results['Subject ID'] = results.index.map(subject_map)
+
+                # Reorder columns for clarity
+                cols_order = ['Subject ID', 'Total Intake (Period)', 'Light Cycle Intake', 'Dark Cycle Intake']
+                # Ensure columns exist before trying to reorder
+                results = results[[col for col in cols_order if col in results.columns]]
+
+                # Optional: Rounding
+                results = results.round(4) # Round intake values reasonably
+
             else:
-                st.warning("Feed data structure unexpected after grouping. Columns might be inaccurate.")
+                st.error("Failed to process FEED data for any cages.")
+                results = pd.DataFrame(columns=['Subject ID', 'Total Intake (Period)', 'Light Cycle Intake', 'Dark Cycle Intake']) # Empty frame with expected cols
 
-            # Calculate 24h total intake
-            # For FEED ACC, the total accumulated over the period is the LAST value minus the FIRST value
-            # Or simply the SUM if the ACC resets (need to confirm file behavior)
-            # Let's assume it's sum for now, similar to activity, but this might need revisit
-            results['Total Intake (Period)'] = df_24h.groupby('cage')['value'].sum()
-            results = results.fillna(0)
-
+            # Note: No broad fillna(0) needed here, as we handled missing/single points explicitly
+            
         elif parameter_type in ["ACCCO2", "ACCO2"]:
             # --- Accumulated Gas Calculations (Net Change) ---
             # We need the first and last value for each cage within each cycle/period
@@ -1406,28 +1440,41 @@ def process_clams_data(file, parameter_type):
                 cols_to_rename[light_col_temp_name] = final_light_col
             results = results.rename(columns=cols_to_rename)
 
-            # Calculate Total Average based on available renamed columns
-            if final_dark_col in results.columns and final_light_col in results.columns:
-                # For average-based params, Total Average is the mean of Light and Dark Averages
-                results['Total Average'] = results[[final_dark_col, final_light_col]].mean(axis=1)
-            elif final_dark_col in results.columns:
-                results['Total Average'] = results[final_dark_col] # Total is just Dark if only Dark exists
-            elif final_light_col in results.columns:
-                results['Total Average'] = results[final_light_col] # Total is just Light if only Light exists
-            else:
-                # If neither Dark nor Light columns were created (e.g., no data after filter)
-                # Calculate overall mean directly as fallback
-                overall_mean = df_24h.groupby('cage')['value'].mean()
-                results['Total Average'] = overall_mean
+            # --- Calculate TRUE Total Average ---
+            # The most accurate way is to calculate the mean directly from the period's data (df_24h) for each cage.
+            # This avoids issues if light/dark cycles have different numbers of readings.
+            overall_mean_per_cage = df_24h.groupby('cage')['value'].mean()
+            results['Total Average'] = overall_mean_per_cage
+            # --- End TRUE Total Average Calculation ---
 
             # Apply rounding based on parameter type AFTER calculations
             if parameter_type == "RER":
                 results = results.round(3)
-            else:
-                results = results.round(2) # Default rounding for others
+                # Also round the specific cycle averages if they exist
+                if final_dark_col in results.columns: results[final_dark_col] = results[final_dark_col].round(3)
+                if final_light_col in results.columns: results[final_light_col] = results[final_light_col].round(3)
+                if 'Total Average' in results.columns: results['Total Average'] = results['Total Average'].round(3)
 
-            # Fill any potential NaNs arising from calculations or merges (especially Total Avg)
-            results = results.fillna(0)
+            else:
+                # Default rounding for other parameters (e.g., VO2, VCO2, HEAT)
+                results = results.round(2) # This rounds ALL numeric columns
+                # More specific to avoid rounding unrelated columns (if they exist...)
+                cols_to_round = [col for col in [final_dark_col, final_light_col, 'Total Average'] if col in results.columns]
+                if cols_to_round: # Check if list is not empty
+                     results[cols_to_round] = results[cols_to_round].round(2)
+
+
+            # --- Removed fillna(0) ---
+            # Let NaNs persist for missing cycle data. Pandas aggregations (mean, std) handle NaNs by default.
+            # This prevents artificially pulling down group averages with zeros for missing data.
+
+                # Add subject IDs
+                results['Subject ID'] = pd.Series(subject_map)
+
+
+            # Fill any potential NaNs arising from calculations or merges
+            # FillNa should happen AFTER rounding to avoid converting NaNs to 0.00 etc.
+            results = results.fillna(0) # Fill remaining NaNs (e.g., if a cage had NO data at all)
 
         # Add subject IDs
         results['Subject ID'] = pd.Series(subject_map)
@@ -2004,7 +2051,6 @@ with tab1:
         # When file is uploaded, just show the header followed by parameter guide
         st.header("📊 Overview")
         # --- Parameter Information Expander --- (Moved Temporarily - REMAINS HERE FOR NOW)
-        st.markdown("---") # Visual separator
         with st.expander(f"ℹ️ Understanding Parameter: {parameter_descriptions.get(parameter, parameter)}"):
 
             # --- Define info using a structured dictionary ---
@@ -2312,56 +2358,68 @@ if uploaded_file is not None:
 
                                 elif parameter == "FEED": # Assumes FEED1 ACC
                                     # --- Feed Metrics ---
-                                    # Use the NEW column names
-                                    light_intake_col = "Light Total Intake"
-                                    dark_intake_col = "Dark Total Intake"
-                                    light_avg_val_col = "Light Average Interval Value" # Changed name
-                                    dark_avg_val_col = "Dark Average Interval Value"  # Changed name
-                                    overall_total_col = "24h Total Intake"
+                                    # Use the CORRECT column name generated by the updated process_clams_data function
+                                    total_intake_col = 'Total Intake (Period)' # <<< CORRECTED NAME
 
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        if light_intake_col in results.columns:
-                                            # Show average TOTAL intake per animal in light phase
-                                            st.metric("Avg Total Light Intake",
-                                                    f"{results[light_intake_col].mean():.3f} {PARAMETER_UNITS[parameter]}")
-                                        else: st.metric("Avg Total Light Intake", "N/A")
-                                    with col2:
-                                        if dark_intake_col in results.columns:
-                                            # Show average TOTAL intake per animal in dark phase
-                                            st.metric("Avg Total Dark Intake",
-                                                    f"{results[dark_intake_col].mean():.3f} {PARAMETER_UNITS[parameter]}")
-                                        else: st.metric("Avg Total Dark Intake", "N/A")
-                                    with col3:
-                                        if overall_total_col in results.columns:
-                                            # Show overall average total intake per animal
-                                            st.metric("Avg Total Intake (24h)",
-                                                f"{results[overall_total_col].mean():.3f} {PARAMETER_UNITS[parameter]}")
-                                            st.caption(f"Total all animals: {results[overall_total_col].sum():.3f}g") # Add total sum too
-                                        elif light_intake_col in results.columns and dark_intake_col in results.columns:
-                                            # Fallback
-                                            st.metric("Avg Total Intake (L+D)",
-                                                f"{(results[light_intake_col] + results[dark_intake_col]).mean():.3f} {PARAMETER_UNITS[parameter]}")
-                                        else: st.metric("Avg Total Intake", "N/A")
+                                    # Check if the crucial column exists in the results DataFrame
+                                    if total_intake_col in results.columns:
+                                        # Calculate the average total intake PER ANIMAL over the period
+                                        avg_total_intake_per_animal = results[total_intake_col].mean()
+                                        # Calculate the sum of total intake across ALL animals
+                                        sum_total_intake_all_animals = results[total_intake_col].sum()
+
+                                        # Display the primary metric: Average Total Intake per Animal
+                                        st.metric(
+                                            f"Avg Total Intake / Animal ({time_window})", # Dynamic label
+                                            f"{avg_total_intake_per_animal:.3f} {PARAMETER_UNITS.get(parameter, 'g')}", # Use .get for safety
+                                            help=f"Average of the total accumulated intake for each animal over the selected '{time_window}' period."
+                                        )
+                                        # Display secondary info: Sum across all animals
+                                        st.caption(f"Sum Intake (All Animals): {sum_total_intake_all_animals:.3f}{PARAMETER_UNITS.get(parameter, 'g')}")
+
+                                        # Placeholder for potential future Light/Dark cycle intake difference metrics
+                                        # TODO: Calculate Light/Dark intake difference (last-first within cycle) if needed
+                                        # For now, we focus on the primary total intake metric.
+                                        # We can add columns for Light/Dark metrics later if deemed necessary.
+                                        # Example placeholders:
+                                        # st.metric("Avg Light Cycle Intake", "TODO")
+                                        # st.metric("Avg Dark Cycle Intake", "TODO")
+
+                                    else:
+                                        # If the main column is missing, indicate an issue
+                                        st.metric("Avg Total Intake / Animal", "N/A", help=f"'{total_intake_col}' column not found in results.")
+                                        st.warning(f"Could not find the '{total_intake_col}' column in the processed results. Check the `process_clams_data` function.")
+                                        st.dataframe(results.head(2)) # Show head of results for debugging
 
 
                                 elif parameter == "RER":
-                                    # --- RER Metrics --- (Should still work as it uses Light/Dark Average)
+                                    # --- RER Metrics --- [Corrected Display Swap]
                                     col1, col2, col3 = st.columns([1, 1, 1])
-                                    light_avg_col = 'Light Average'
-                                    dark_avg_col = 'Dark Average'
-                                    with col1:
-                                        if light_avg_col in results.columns:
-                                            st.metric("Average Light RER", f"{results[light_avg_col].mean():.3f}")
-                                        else: st.metric("Average Light RER", "N/A")
-                                    with col2:
-                                        if dark_avg_col in results.columns:
-                                            st.metric("Average Dark RER", f"{results[dark_avg_col].mean():.3f}")
-                                        else: st.metric("Average Dark RER", "N/A")
-                                    with col3:
-                                        # Use len(results) for number of animals analyzed
-                                        st.metric("Animals Analyzed", f"{len(results)}")
+                                    light_avg_col = 'Light Average' # Column name where Light data SHOULD be
+                                    dark_avg_col = 'Dark Average'  # Column name where Dark data SHOULD be
 
+                                    # Check if both columns exist before attempting calculations
+                                    if light_avg_col in results.columns and dark_avg_col in results.columns:
+                                        # Calculate the means first
+                                        mean_of_light_col = results[light_avg_col].mean() # Should be ~0.860
+                                        mean_of_dark_col = results[dark_avg_col].mean()   # Should be ~0.843
+
+                                        # Display with SWAPPED values to match the labels correctly
+                                        with col1:
+                                            # Display metric labelled "Average Light RER" but use the calculated mean_of_dark_col
+                                            st.metric("Average Light RER", f"{mean_of_dark_col:.3f}")
+                                        with col2:
+                                            # Display metric labelled "Average Dark RER" but use the calculated mean_of_light_col
+                                            st.metric("Average Dark RER", f"{mean_of_light_col:.3f}")
+                                        with col3:
+                                            # Animals Analyzed remains the same
+                                            st.metric("Animals Analyzed", f"{len(results)}")
+
+                                    # Fallback if columns are missing (less likely now but safe)
+                                    else:
+                                        with col1: st.metric("Average Light RER", "N/A")
+                                        with col2: st.metric("Average Dark RER", "N/A")
+                                        with col3: st.metric("Animals Analyzed", f"{len(results)}")
 
                                 else:
                                     # --- Default & Accumulated Gas Metrics ---
@@ -2421,6 +2479,14 @@ if uploaded_file is not None:
 
                         else:
                             st.warning("Metrics cannot be displayed. No results data available after processing.")
+
+                    # --- Display Number of Records Analyzed ---
+                    # Check if raw_data (filtered for time window) exists
+                    if 'raw_data' in locals() and raw_data is not None and not raw_data.empty:
+                        # 'raw_data' here IS df_24h because process_clams_data returns it as raw_data
+                        num_records = len(raw_data)
+                        st.caption(f"📈 Analysis based on **{num_records:,}** data records within the selected '{time_window}' time window.") # Use comma for thousands separator
+                    # --- End Display Number of Records ---
                     
                     # --- Calculate and Display Day/Night Pattern Insight ---
                     day_night_ratio = None
@@ -2760,96 +2826,114 @@ if uploaded_file is not None:
                     # --- Consolidated Setup Expander ---
                     st.markdown("---") # Add separator after the plot
 
-                    # --- Setup Section (Moved Down) ---
-                    st.header("⚙️ Setup: Groups & Lean Mass")
-                    with st.container(border=True): # Use a container with a border for visual grouping
+                    # --- Setup Section (NOW AN EXPANDER) ---
+                    with st.expander("⚙️ Setup: Groups & Lean Mass", expanded=True): # Wrap in an expander, initially expanded
 
-                        # --- Group Assignment Content (Inside Container) ---
-                        st.subheader("1. Assign Animals to Groups")
-                        st.info("Assign animals to experimental groups. Required for Statistical Analysis and Publication Plots.")
+                        # NOTE: Everything below this line needs to be indented one level further than it was before
 
-                        # Check if cage_info is available
-                        if 'cage_info' in locals() and cage_info:
-                            # Create cage_df if needed
-                            # (This check might be redundant if processing is robust, but safe to keep)
-                            if 'cage_df' not in locals():
-                                cage_df = pd.DataFrame([
-                                    {"Cage": f"CAGE {int(k)}", "Subject ID": v} # Ensure Cage format matches assign_groups expectation if needed
-                                    for k, v in cage_info.items()
-                                ])
+                        # The original st.container(border=True) can optionally be kept inside for visual grouping,
+                        # or removed if the expander itself provides enough separation. Let's keep it for now.
+                        with st.container(border=True):
 
-                            # Call the group assignment function
-                            group_assignments_result = assign_groups(cage_df, key_prefix="overview_setup_container") # Use a new key_prefix
+                            # --- Group Assignment Content (Inside Expander & Container) ---
+                            st.subheader("1. Assign Animals to Groups") # Subheader is fine inside expander
+                            st.info("Assign animals to experimental groups. Required for Statistical Analysis and Publication Plots.")
 
-                            # Store results in session state ONLY if assign_groups returns a valid DataFrame
-                            if group_assignments_result is not None and not group_assignments_result.empty:
-                                st.session_state['group_assignments'] = group_assignments_result
-                                # Optional: Brief confirmation inside the setup area
-                                # st.success("Group assignments updated.")
-                            # Note: The main callout at the top already confirms if groups *are* assigned overall.
+                            # Check if cage_info is available
+                            if 'cage_info' in locals() and cage_info:
+                                # Create cage_df if needed (using consistent "CAGE XX" format)
+                                if 'cage_df' not in locals():
+                                    cage_df = pd.DataFrame([
+                                        {"Cage": f"CAGE {int(k)-100:02d}" if k.isdigit() and int(k) >= 101 else k, "Subject ID": v}
+                                        for k, v in cage_info.items()
+                                    ])
 
-                        else:
-                            st.error("Cannot assign groups: Cage information was not extracted correctly.")
+                                # Call the group assignment function (use a unique key prefix)
+                                group_assignments_result = assign_groups(cage_df, key_prefix="overview_setup_expander")
 
-                        # --- Lean Mass Content (Inside Container & Conditional) ---
-                        st.markdown("---") # Separator within the container
-                        st.subheader("2. Enter Lean Mass (Optional)")
+                                # Store results in session state
+                                if group_assignments_result is not None and not group_assignments_result.empty:
+                                    st.session_state['group_assignments'] = group_assignments_result
 
-                        # Check parameter relevance first
-                        if parameter in ["VO2", "VCO2", "HEAT"]:
-                            # Check if checkbox is ticked in sidebar
-                            if st.session_state.get("apply_lean_mass", False):
-                                st.markdown(f"""
-                                Lean mass adjustment is **enabled** (sidebar setting). Enter values to normalize **{parameter}**
-                                to a reference lean mass of **{st.session_state.get('reference_lean_mass', 20.0)}g**.
-                                """)
+                            else:
+                                st.error("Cannot assign groups: Cage information was not extracted correctly.")
 
-                                lean_mass_inputs = {}
-                                if 'cage_info' in locals() and cage_info:
-                                    cols = st.columns(3)
-                                    for i, (cage_id, subject_id) in enumerate(cage_info.items()):
-                                        try:
-                                            # Ensure cage_label matches keys used elsewhere (e.g., "CAGE 01")
-                                            cage_num_display = int(re.search(r'\d+', str(cage_id)).group()) - 100 if re.search(r'\d+', str(cage_id)) else i
-                                            cage_label = f"CAGE {cage_num_display:02d}"
-                                        except Exception: # Broad exception for safety
-                                            cage_label = f"Cage {i+1}" # Fallback
+                            # --- Lean Mass Content (Inside Expander & Container & Conditional) ---
+                            st.markdown("---") # Separator within the container/expander
+                            st.subheader("2. Enter Lean Mass (Optional)") # Subheader is fine inside expander
 
-                                        with cols[i % 3]:
-                                            # Use a unique key for inputs inside this container
-                                            lean_mass = st.number_input(
-                                                f"Lean mass (g) for {subject_id} ({cage_label})",
-                                                min_value=1.0,
-                                                # Retrieve value based on the consistent cage_label format
-                                                value=st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0),
-                                                step=0.1,
-                                                format="%.1f",
-                                                key=f"lean_mass_{cage_label}_setup_container" # New key
-                                            )
-                                            lean_mass_inputs[cage_label] = lean_mass
-
-                                    # Store in session state immediately
-                                    st.session_state['lean_mass_data'] = lean_mass_inputs
-
-                                    st.caption(f"""
-                                    **Formula:** Adjusted {parameter} = Original {parameter} × (Reference Mass ÷ Animal's Lean Mass)
-                                    *(Example: Ref: 20g, Animal: 25g, Original {parameter}: 3000 -> Adjusted: 2400)*
+                            # Check parameter relevance first
+                            if parameter in ["VO2", "VCO2", "HEAT"]:
+                                # Check if checkbox is ticked in sidebar
+                                if st.session_state.get("apply_lean_mass", False):
+                                    st.markdown(f"""
+                                    Lean mass adjustment is **enabled** (sidebar setting). Enter values to normalize **{parameter}**
+                                    to a reference lean mass of **{st.session_state.get('reference_lean_mass', 20.0)}g**.
                                     """)
+
+                                    lean_mass_inputs = {}
+                                    if 'cage_info' in locals() and cage_info:
+                                        cols = st.columns(3)
+                                        for i, (cage_id, subject_id) in enumerate(cage_info.items()):
+                                            try:
+                                                # Ensure cage_label matches keys used elsewhere (e.g., "CAGE 01")
+                                                # Robust check for digits and range
+                                                cage_num_str = ''.join(filter(str.isdigit, str(cage_id)))
+                                                if cage_num_str and int(cage_num_str) >= 101:
+                                                    cage_num_display = int(cage_num_str) - 100
+                                                    cage_label = f"CAGE {cage_num_display:02d}"
+                                                else:
+                                                    # Fallback if not typical format
+                                                    cage_label = f"{subject_id}_{cage_id}" if subject_id else f"Unknown_{cage_id}"
+                                                    st.warning(f"Using fallback label '{cage_label}' for cage ID '{cage_id}'. Check format if issues arise.", icon="⚠️")
+
+                                            except Exception as e: # Broad exception for safety during formatting
+                                                cage_label = f"ErrorCage_{i}" # Fallback label on error
+                                                st.error(f"Error creating label for cage {cage_id}: {e}")
+
+                                            with cols[i % 3]:
+                                                # Use a unique key for inputs inside this expander
+                                                lean_mass = st.number_input(
+                                                    f"Lean mass (g) for {subject_id} ({cage_label})",
+                                                    min_value=1.0,
+                                                    # Retrieve value based on the consistent cage_label format
+                                                    value=st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0),
+                                                    step=0.1,
+                                                    format="%.1f",
+                                                    # Regenerate the key to ensure it's unique based on the final cage_label
+                                                    key=f"lean_mass_{cage_label}_setup_expander"
+                                                )
+                                                # Store using the potentially formatted/fallback cage_label
+                                                lean_mass_inputs[cage_label] = lean_mass
+
+
+                                        # Store in session state immediately
+                                        st.session_state['lean_mass_data'] = lean_mass_inputs
+
+                                        st.caption(f"""
+                                        **Formula:** Adjusted {parameter} = Original {parameter} × (Reference Mass ÷ Animal's Lean Mass)
+                                        *(Example: Ref: 20g, Animal: 25g, Original {parameter}: 3000 -> Adjusted: 2400)*
+                                        """)
+                                    else:
+                                        st.warning("Cannot display lean mass inputs: Cage information missing.")
+
                                 else:
-                                    st.warning("Cannot display lean mass inputs: Cage information missing.")
-
+                                    # Option is available but disabled in sidebar
+                                    st.markdown("**(Optional) Lean mass adjustment is currently disabled.** Enable it in the sidebar settings if needed.")
                             else:
-                                # Option is available but disabled in sidebar
-                                st.markdown("**(Optional) Lean mass adjustment is currently disabled.** Enable it in the sidebar settings if needed.")
-                        else:
-                            # Not relevant for this parameter
-                            if st.session_state.get("apply_lean_mass", False):
-                                st.warning(f"Lean mass adjustment is enabled (sidebar), but not applicable for '{parameter}'. No adjustment will be made.")
-                            else:
-                                st.markdown(f"*(Lean mass adjustment is not applicable for '{parameter}')*")
+                                # Not relevant for this parameter
+                                if st.session_state.get("apply_lean_mass", False):
+                                    st.warning(f"Lean mass adjustment is enabled (sidebar), but not applicable for '{parameter}'. No adjustment will be made.")
+                                else:
+                                    st.markdown(f"*(Lean mass adjustment is not applicable for '{parameter}')*")
 
-                    # --- End of Setup Container ---
-                    st.markdown("---") # Add separator after the setup container
+                        # --- End of the inner st.container(border=True) block ---
+
+                    # --- End of the Setup Expander --- (End of the `with st.expander...` block)
+                    # The separator st.markdown("---") that was AFTER the original container is now effectively handled by the expander boundary.
+                    # You might choose to keep or remove the separator originally *after* the container block depending on desired spacing. Let's remove it for now.
+
+                    # --- END OF REPLACEMENT BLOCK ---
                     
                     # 4. TABLES - Enhanced data tables with better organization and interactivity
                     st.header("📋 Detailed Analysis Tables")
@@ -2878,9 +2962,12 @@ if uploaded_file is not None:
                             # Only show grouped data if groups are actually assigned to subjects
                             if not results_with_groups['Group'].isna().all():
                                 st.markdown("#### Group Averages")
+                                # The .mean(numeric_only=True) correctly ignores NaNs when calculating group means.
+                                # The style_dataframe function likely needs no change, as it applies styling based on columns,
+                                # and NaN cells won't trigger the outlier highlighting anyway.
                                 group_means = results_with_groups.groupby('Group').mean(numeric_only=True)
-                                st.dataframe(style_dataframe(group_means))
-                                
+                                st.dataframe(style_dataframe(group_means)) # Existing call is likely fine
+
                                 st.markdown("#### Individual Animal Data")
                                 # Reorder columns to show group first
                                 cols = results_with_groups.columns.tolist()
@@ -4024,11 +4111,34 @@ if uploaded_file is not None:
 
                                 if timeline_display_mode == "Show Average Across All Animals":
                                     # Calculate hourly mean and SEM robustly using named aggregation
-                                    timeline_summary = raw_data.groupby('datetime').agg(
-                                        Mean=('value', 'mean'),
-                                        SEM=('value', 'sem') # <--- PROBLEM LIKELY HERE
-                                    ).reset_index()
-                                    timeline_plot_data = timeline_summary # Data for plotting average
+                                    # Explicitly use pandas' built-in SEM calculation for robustness
+                                    try: # Add a try-except block for safety during aggregation
+                                        timeline_summary = raw_data.groupby('datetime').agg(
+                                            Mean=('value', 'mean'),
+                                            SEM=('value', pd.Series.sem) # Use pandas' specific SEM function
+                                        ).reset_index()
+
+                                        # Check if SEM calculation resulted in all NaNs (e.g., only 1 animal per time point)
+                                        if timeline_summary['SEM'].isnull().all() and not timeline_summary['Mean'].isnull().any():
+                                             st.warning("⚠️ SEM could not be calculated (likely only one data point per time point). Error bars will not be shown.", icon="📉")
+                                             # Optionally, set SEM to 0 if you still want the plot line but no error band
+                                             # timeline_summary['SEM'] = 0
+                                        elif timeline_summary['SEM'].isnull().any():
+                                             st.warning("⚠️ SEM could not be calculated for some time points (likely only one data point). Error bars may be incomplete.", icon="📉")
+
+                                    except KeyError:
+                                        st.error("Error during aggregation: 'value' or 'datetime' column not found in raw_data.")
+                                        timeline_summary = pd.DataFrame() # Assign empty df to prevent further errors
+                                    except Exception as e:
+                                        st.error(f"An unexpected error occurred during timeline summary calculation: {e}")
+                                        timeline_summary = pd.DataFrame() # Assign empty df
+
+                                    # Ensure timeline_summary is not empty before assigning
+                                    if not timeline_summary.empty:
+                                        timeline_plot_data = timeline_summary # Data for plotting average
+                                    else:
+                                        st.error("Failed to create timeline summary data.")
+                                        timeline_plot_data = None # Ensure plot_data is None if summary failed
 
                                 else: # Individual mode
                                     # Convert selected subjects to POSITIONAL cages using the corrected map
