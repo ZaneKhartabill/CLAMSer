@@ -18,6 +18,50 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols
 from scikit_posthocs import posthoc_ttest
 
+# ------------- JUMBO MUMBO FOR LEAN MASS STUFF -------------
+
+# Callback function to toggle the lean mass state
+def toggle_lean_mass_state():
+    current_state = st.session_state.get('apply_lean_mass', False)
+    st.session_state.apply_lean_mass = not current_state
+    # Optional: Add a print here to see when the callback fires
+    print(f"Callback toggled apply_lean_mass to: {st.session_state.apply_lean_mass}")
+    
+# NEW Callback function to apply lean mass changes from inputs
+def apply_lean_mass_changes():
+    print("--- apply_lean_mass_changes callback triggered ---") # Debug
+    # Ensure cage_info exists in session state before proceeding
+    if 'cage_info' not in st.session_state or not st.session_state['cage_info']:
+        st.warning("Cannot apply lean mass changes: Cage information is missing.")
+        print("Error: cage_info missing in apply_lean_mass_changes") # Debug
+        return # Exit the callback
+
+    # Create a temporary dictionary to hold the latest values
+    latest_lean_mass_data = {}
+    found_keys = True
+    for cage_label in st.session_state['cage_info'].keys():
+        widget_key = f"lean_mass_{cage_label}_setup_expander"
+        # Read the current value directly from the session state associated with the number_input's key
+        if widget_key in st.session_state:
+            latest_lean_mass_data[cage_label] = st.session_state[widget_key]
+        else:
+            # This case should ideally not happen if the inputs were rendered, but good for robustness
+            print(f"Warning: Widget key '{widget_key}' not found in session state for {cage_label}.")
+            # Optionally try getting default or skip
+            latest_lean_mass_data[cage_label] = st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0) # Fallback maybe? Or error?
+            found_keys=False
+            
+    if not found_keys:
+         st.warning("Could not read values for all lean mass inputs. Please ensure they were displayed correctly.", icon="⚠️")
+
+    # Update the main session state dictionary that process_clams_data uses
+    st.session_state['lean_mass_data'] = latest_lean_mass_data
+    print(f"Updated st.session_state['lean_mass_data'] to: {st.session_state['lean_mass_data']}") # Debug
+
+    # Now trigger the rerun to re-process data with the new values
+    st.rerun()
+
+# ------------- END JUMBO MUMBO -------------
 
 # Page setup + title
 st.set_page_config(
@@ -48,16 +92,16 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Constants
+# Dictionary for all constants
 PARAMETER_UNITS = {
-    # Existing Metabolic & Feed
+    # Core Biological - Metabolic & Feed
     "VO2": "ml/kg/hr",
     "VCO2": "ml/kg/hr",
     "RER": "ratio",
     "HEAT": "kcal/hr",
     "FEED": "g", # Represents FEED1 ACC
 
-    # Activity (Existing X + New Y/Z)
+    # Core Biological - Activity
     "XTOT": "counts",
     "XAMB": "counts",
     "YTOT": "counts",
@@ -65,25 +109,24 @@ PARAMETER_UNITS = {
     "ZTOT": "counts",
     "ZAMB": "counts",
 
-    # Gas Concentrations
+    # Core Biological - Accumulated Gas (Net Change)
+    "ACCCO2": "l",      # Net Accumulated CO2 (Liters) over period
+    "ACCO2": "l",       # Net Accumulated O2 (Liters) over period - Often represents consumption
+
+    # Diagnostic - Gas Concentrations
     "O2IN": "%",
     "O2OUT": "%",
     "CO2IN": "%",
     "CO2OUT": "%",
 
-    # Delta Gas Concentrations
-    "DO2": "%",
-    "DCO2": "%",
+    # Diagnostic - Delta Gas Concentrations
+    "DO2": "%",         # O2IN - O2OUT
+    "DCO2": "%",        # CO2OUT - CO2IN
 
-    # Environmental
+    # Diagnostic - Environmental/System
     "FLOW": "lpm",      # Liters per minute
     "PRESSURE": "mmhg", # Millimeters of mercury
-
-    # Accumulated Gases (Assuming Liters - VERIFY IF POSSIBLE)
-    "ACCCO2": "l",      # Accumulated CO2 (Liters)
-    "ACCO2": "l"       # Accumulated O2 (Liters) - Naming might be confusing, often O2 is consumption
-                       # Verify if ACCO2 truly exists or if it's typically calculated.
-                       # Let's keep it for now based on samples.
+    # Add other system/diag params if they appear later (e.g., from DIAG.CSV)
 }
 
 GROUP_COLORS = {
@@ -99,40 +142,40 @@ GROUP_COLORS = {
 
 # Add parameter_descriptions dictionary
 parameter_descriptions = {
-    # Existing Metabolic & Feed
+    # Core Biological - Metabolic & Feed
     "VO2": "Oxygen consumption rate (ml/kg/hr)",
     "VCO2": "Carbon dioxide production rate (ml/kg/hr)",
     "RER": "Respiratory Exchange Ratio (VCO2/VO2)",
     "HEAT": "Calculated heat production (kcal/hr)",
-    "FEED": "Accumulated food intake (g)", # Clarify it's Accumulated
+    "FEED": "Accumulated food intake (g) [Use FEED1 ACC file]", # Emphasize file
 
-    # Activity (Existing X + New Y/Z)
-    "XTOT": "Total X-axis activity (counts)",
-    "XAMB": "Ambulatory X-axis activity (counts)",
-    "YTOT": "Total Y-axis activity (counts)",
-    "YAMB": "Ambulatory Y-axis activity (counts)",
-    "ZTOT": "Total Z-axis activity (rearing/climbing, counts)", # Add context for Z
-    "ZAMB": "Ambulatory Z-axis activity (rearing/climbing, counts)", # Add context for Z
+    # Core Biological - Activity
+    "XTOT": "Total X-axis activity (fine + ambulatory, counts)",
+    "XAMB": "Ambulatory X-axis activity (locomotion, counts)",
+    "YTOT": "Total Y-axis activity (fine + ambulatory, counts)",
+    "YAMB": "Ambulatory Y-axis activity (locomotion, counts)",
+    "ZTOT": "Total Z-axis activity (fine + rearing/climbing, counts)",
+    "ZAMB": "Ambulatory Z-axis activity (rearing/climbing, counts)",
 
-    # Gas Concentrations
-    "O2IN": "Inlet Oxygen concentration (%)",
-    "O2OUT": "Outlet Oxygen concentration (%)",
-    "CO2IN": "Inlet Carbon Dioxide concentration (%)",
-    "CO2OUT": "Outlet Carbon Dioxide concentration (%)",
+    # Core Biological - Accumulated Gas (Net Change)
+    "ACCCO2": "Net Accumulated CO2 production (L) over period", # Clarify 'Net' and 'L? hmm'
+    "ACCO2": "Net Accumulated O2 consumption (L) over period", # Clarify 'Net' and 'L'
 
-    # Delta Gas Concentrations
-    "DO2": "Delta O2 concentration (O2IN - O2OUT, %)",
-    "DCO2": "Delta CO2 concentration (CO2OUT - CO2IN, %)", # Note typical calculation order
+    # Diagnostic - Gas Concentrations
+    "[Diagnostic] O2IN": "Inlet Oxygen concentration (%) ",
+    "[Diagnostic] O2OUT": "Outlet Oxygen concentration (%)",
+    "[Diagnostic] CO2IN": "Inlet Carbon Dioxide concentration (%)",
+    "[Diagnostic] CO2OUT": "Outlet Carbon Dioxide concentration (%)",
 
-    # Environmental
-    "FLOW": "Air flow rate through cage (lpm)",
-    "PRESSURE": "Barometric pressure (mmhg)",
+    # Diagnostic - Delta Gas Concentrations
+    "[Diagnostic] DO2": "Delta O2 conc. (O2IN - O2OUT, %)",
+    "[Diagnostic] DCO2": "Delta CO2 conc. (CO2OUT - CO2IN, %)",
 
-    # Accumulated Gases
-    "ACCCO2": "Accumulated CO2 production (l)",
-    "ACCO2": "Accumulated O2 consumption (l)" # Assumed definition
+    # Diagnostic - Environmental/System
+    "[System] FLOW": "Air flow rate through cage (lpm)",
+    "[System] PRESSURE": "Barometric pressure (mmhg)",
+    # Add other system/diag params if they appear later
 }
-
 
 # Sidebar setup
 with st.sidebar:
@@ -418,37 +461,32 @@ with st.sidebar:
             **Why normalize?** Fat tissue is less metabolically active. Normalizing to lean mass gives fairer comparisons.
             """)
 
-            # The checkbox widget itself updates session state['apply_lean_mass']
-            apply_lean_mass = st.checkbox(
+            # Define the checkbox, calling the callback on change
+            # Use a DIFFERENT key for the widget itself
+            st.checkbox(
                 "Apply Lean Mass Adjustment",
-                value=st.session_state.get('apply_lean_mass', False), # Read initial value from session state
+                value=st.session_state.get('apply_lean_mass', False), # Read initial state
                 help="Normalize metabolic data to lean mass instead of total body weight",
-                key="apply_lean_mass" # The key links this widget to session state
+                key="lean_mass_checkbox_widget", # <--- KEY CHANGED! Not linked directly to state anymore
+                on_change=toggle_lean_mass_state # <--- CALLBACK ADDED!
             )
-            # NO NEED to manually set st.session_state['apply_lean_mass'] here
 
-            # Conditionally show the input based on the *current state* of the checkbox
-            # We can read directly from session_state OR use the variable 'apply_lean_mass' which holds the widget's current value
-            if st.session_state.apply_lean_mass: # Read directly from session state for clarity
-                # The number_input widget itself updates session_state['reference_lean_mass']
+            # Conditionally show the reference mass input based on the SESSION STATE value
+            # This ensures it reflects the state set by the callback after the rerun
+            if st.session_state.get('apply_lean_mass', False): # Check the actual session state
                 reference_mass = st.number_input(
                     "Reference lean mass (g):", # Simplified label
                     min_value=1.0,
-                    value=st.session_state.get('reference_lean_mass', 20.0), # Read initial value from session state
+                    # Use a separate key for the number input's value storage
+                    value=st.session_state.get('reference_lean_mass_sidebar_val', 20.0),
                     step=0.1,
                     format="%.1f",
                     help="Standard lean mass value used for normalization",
-                    key="reference_lean_mass_sidebar" # The key links this widget to session state
+                    key="reference_lean_mass_sidebar_val" # Key for the number input value
                 )
-                # NO NEED to manually set st.session_state['reference_lean_mass'] here
-
                 st.info("📌 Enter individual animal lean masses in the Overview tab after uploading.")
         st.divider() # Divider after the normalization section
-    else:
-        # If the parameter is not metabolic, ensure the session state flag is False.
-        # This is okay because the 'apply_lean_mass' checkbox widget *isn't* created in this 'else' block.
-        if 'apply_lean_mass' in st.session_state: # Check if it exists before trying to set it
-                st.session_state['apply_lean_mass'] = False
+    # NO else block here that modifies the state
 
 
     # --- File Upload ---
@@ -537,43 +575,113 @@ for i, (step, col) in enumerate(zip(workflow_steps, cols)):
 # --- End Analysis Workflow Indicator ---
 st.markdown("---") # Separator before the main tabs
 
-# Helper functions
-def detect_outliers(df, z_score_threshold=2):
-    """Detect outliers using z-score method"""
+def detect_outliers(df, z_score_threshold=2, skip_cols=None):
+    """
+    Detect outliers in numeric columns using the Z-score method.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame.
+        z_score_threshold (float): Z-score threshold for outlier detection.
+        skip_cols (list, optional): List of column names to exclude from
+                                     outlier detection. Defaults to None.
+
+    Returns:
+        pd.DataFrame: DataFrame of booleans indicating outlier positions,
+                      or None if input df is None.
+    """
     if df is None:
         return None
-    
+
+    # Default list of columns to skip if none provided
+    if skip_cols is None:
+        skip_cols = ['hour', 'Mean', 'SEM', 'N'] # Added 'N' as it might appear in tables
+
+    # Select only numeric columns for z-score calculation
     numeric_cols = df.select_dtypes(include=[np.number]).columns
+
+    # Initialize outliers DataFrame with False values, same shape as input df
     outliers = pd.DataFrame(False, index=df.index, columns=df.columns)
-    
+
+    # Iterate through numeric columns
     for col in numeric_cols:
-        if col not in ['hour', 'Mean', 'SEM']:  # Skip these columns
-            z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
-            outliers[col] = z_scores > z_score_threshold
-    
+        # Skip columns specified in skip_cols list or the index name if it's numeric
+        if col in skip_cols or col == df.index.name:
+            continue
+
+        # --- Check for sufficient data and variation ---
+        col_data = df[col].dropna() # Work with non-missing data for this column
+        if len(col_data) < 3: # Need at least 3 points for a meaningful std dev
+            continue # Not enough data points to calculate outliers reliably
+
+        mean_val = col_data.mean()
+        std_val = col_data.std()
+
+        # Skip if standard deviation is zero or very close to zero (or NaN)
+        if std_val is None or np.isnan(std_val) or std_val < 1e-9:
+            continue # No variation or cannot calculate std dev, so no outliers
+
+        # Calculate absolute z-scores for the original column (including NaNs)
+        z_scores = np.abs((df[col] - mean_val) / std_val)
+
+        # Mark as outlier where z_score > threshold (NaNs will correctly result in False)
+        outliers[col] = z_scores > z_score_threshold
+
     return outliers
 
 
     
-def style_dataframe(df):
-    """Apply styling to dataframe including outlier highlighting"""
+def style_dataframe(df, z_score_threshold=2, skip_cols_outlier=None):
+    """
+    Apply styling to a DataFrame, highlighting outliers in numeric columns.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame.
+        z_score_threshold (float): Z-score threshold for outlier detection.
+        skip_cols_outlier (list, optional): List of column names to exclude
+                                             from outlier detection/styling.
+                                             Defaults to ['hour', 'Mean', 'SEM', 'N'].
+
+    Returns:
+        pd.Styler or pd.DataFrame: Styled DataFrame object or original df if input is None.
+    """
     if df is None:
         return df
-    
-    outliers = detect_outliers(df)
-    
-    def highlight_outliers(col):
-        if col.name in outliers.columns and col.name not in ['Subject ID']:
-            return ['background-color: rgba(255, 0, 0, 0.2)' if v else '' for v in outliers[col.name]]
-        return ['' for _ in range(len(df.index))]
-    
-    return df.style.apply(highlight_outliers)
 
-import re
-import io
+    # Define the default columns to skip for outlier detection
+    if skip_cols_outlier is None:
+        skip_cols_outlier = ['hour', 'Mean', 'SEM', 'N', 'Subject ID', 'Group', 'Cage'] # Add common non-numeric IDs
 
-import re
-import io
+    # Detect outliers using the helper function, passing the skip_cols
+    outliers = detect_outliers(df, z_score_threshold=z_score_threshold, skip_cols=skip_cols_outlier)
+
+    # Check if outlier detection returned a valid DataFrame
+    if outliers is None:
+         # If outlier detection failed or df was unsuitable, return unstyled df
+         return df
+
+    # Define a function to apply background color styling based on the outliers DataFrame
+    def highlight_outliers_styling(column_data):
+        # Check if the current column name exists in the outliers DataFrame
+        # and if it wasn't explicitly skipped
+        col_name = column_data.name
+        if col_name in outliers.columns and col_name not in skip_cols_outlier:
+            # Return a list of style strings based on the boolean values in the outliers df
+            # Ensure alignment using the index
+            return ['background-color: rgba(255, 0, 0, 0.2)' if outliers.loc[idx, col_name] else ''
+                    for idx in column_data.index]
+        else:
+            # Return empty styles for columns not checked or explicitly skipped
+            return ['' for _ in column_data.index]
+
+    # Apply the styling function column-wise using df.style.apply
+    try:
+        styled_df = df.style.apply(highlight_outliers_styling)
+        # Optionally add hover tooltips or other formatting here if needed
+        # Example: styled_df = styled_df.set_tooltips(outliers.replace({True: 'Potential Outlier (Z > {z_score_threshold})', False: ''}))
+        return styled_df
+    except Exception as e:
+         st.warning(f"Could not apply outlier styling: {e}. Displaying unstyled table.")
+         return df # Return unstyled df on error
 
 def verify_file_type(file, expected_type):
     """
@@ -611,9 +719,10 @@ def verify_file_type(file, expected_type):
 
             # Use re.match to anchor search to START for the parameter line
             if file_parameter_full is None:
+                # Original regex: handles "Paramter" or "Parameter", whitespace, optional quotes
                 match = re.match(r"Param(?:e?)ter[\s,\t]+\"?(.*?)\"?$", line_strip, re.IGNORECASE)
                 if match:
-                    file_parameter_full = match.group(1).strip()
+                    file_parameter_full = match.group(1).strip() # Get the part after "Parameter/Paramter"
 
             if ':DATA' in line_strip:
                 has_data_tag = True
@@ -622,75 +731,82 @@ def verify_file_type(file, expected_type):
             if line_count > max_header_lines:
                 break
 
-        file.seek(0)
-        wrapper.detach()
+        file.seek(0) # Rewind file pointer
+        wrapper.detach() # Detach wrapper without closing underlying file stream
 
         # --- Perform validation based on findings ---
         if not has_parameter_file_tag:
-             return False, "File format not recognized. Expected 'PARAMETER File' tag in the first line."
+             return False, "File format error: Expected 'PARAMETER File' tag in the first line." # Hard fail
         if not has_data_tag:
              if line_count > max_header_lines:
-                 return False, f"File structure error: ':DATA' marker not found within the first {max_header_lines} lines. File might be corrupt or incomplete."
+                 return False, f"File structure error: ':DATA' marker not found within the first {max_header_lines} lines. File might be corrupt or incomplete." # Hard fail
              else:
-                 return False, "File structure error: ':DATA' marker not found."
+                 return False, "File structure error: ':DATA' marker not found." # Hard fail
 
         # --- Check parameter match ---
-        file_parameter_name = None
-        match_status = "No Match" # For debugging
+        file_parameter_base = None # Extracted base name (e.g., "VO2")
+        match_status = "Parameter Line Not Found" # Default status
 
         if file_parameter_full:
             # --- Revised Base Name Extraction ---
-            # Try to capture the part before the first opening parenthesis '(', if it exists.
-            # Allow letters, numbers, spaces. Strip trailing space.
-            base_name_match = re.match(r"([a-zA-Z0-9\s]+)(?:\s*\(.*)?", file_parameter_full)
+            # Match common patterns: NAME (UNIT), NAME, potentially with spaces
+            # 1. Try matching "NAME (UNIT)" pattern first
+            base_name_match = re.match(r"^\s*([a-zA-Z0-9/]+(?:\s+[a-zA-Z0-9/]+)*)\s+\(.*\)\s*$", file_parameter_full)
             if base_name_match:
-                file_parameter_name = base_name_match.group(1).strip() # Get only the first group
-
-                # --- Debug Print (Optional - uncomment to see parsing) ---
-                # print(f"DEBUG: Full='{file_parameter_full}', Base='{file_parameter_name}', Expected='{expected_type}'")
-
-                # Special case: Handle "FEED1 ACC" vs "FEED" selection
-                if expected_type == "FEED" and file_parameter_name.upper() == "FEED1 ACC":
-                    match_status = "FEED Match"
-                    return True, ""
-
-                # General case: Compare extracted base name with user selection
-                if file_parameter_name.strip().upper() == expected_type.strip().upper():
-                    match_status = "Exact Match"
-                    return True, ""
+                file_parameter_base = base_name_match.group(1).strip()
+                match_status = f"Parsed '{file_parameter_base}' from '{file_parameter_full}' (with unit)"
             else:
-                # Failed to parse base name even though file_parameter_full was found
-                match_status = "Base Name Parse Failed"
-        else:
-            match_status = "Paramter Line Not Found"
+                # 2. If no unit pattern, try matching just the name (might be FEED1 ACC)
+                # Allow alphanumeric, space, forward slash
+                base_name_match = re.match(r"^\s*([a-zA-Z0-9/\s]+)\s*$", file_parameter_full)
+                if base_name_match:
+                     file_parameter_base = base_name_match.group(1).strip()
+                     match_status = f"Parsed '{file_parameter_base}' from '{file_parameter_full}' (no unit)"
+                else:
+                    # Failed to parse base name even though file_parameter_full was found
+                    match_status = f"Base Name Parse Failed for '{file_parameter_full}'"
+        # else: file_parameter_full is None, match_status remains "Parameter Line Not Found"
 
+        # --- Perform Comparison ---
+        # Convert both expected and found base name to upper case for case-insensitive comparison
+        expected_upper = expected_type.strip().upper()
+        found_upper = file_parameter_base.strip().upper() if file_parameter_base else None
 
-        # --- Construct and return warning if no match ---
-        # Only issue warning if we haven't returned True,"" above
-        warning_source = ""
-        if not file_parameter_full:
-            warning_source = "parameter line ('Paramter ...') not found or unreadable in header"
-        elif file_parameter_name:
-             # Show what was parsed if it exists, even if it didn't match
-             warning_source = f"file header indicates '{file_parameter_full}' (parsed base name as '{file_parameter_name}')"
-        else:
-             # file_parameter_full exists, but base name parsing failed
-             warning_source = f"file header indicates '{file_parameter_full}' (could not parse base name)"
+        # Case 1: Exact match (after case conversion)
+        if found_upper and found_upper == expected_upper:
+            return True, "" # Success, no message needed
+
+        # Case 2: Special handling for FEED vs FEED1 ACC
+        # Check if user selected "FEED" and file contains "FEED1 ACC"
+        if expected_upper == "FEED" and found_upper == "FEED1 ACC":
+            return True, "" # Treat as valid match, no warning needed
+
+        # Case 3: No exact match, issue a warning but allow processing
+        warning_source = "parameter information not found or unreadable in header" # Default source
+        if file_parameter_full:
+            if file_parameter_base:
+                # We parsed something, but it didn't match
+                warning_source = f"file header indicates parameter '{file_parameter_base}' (from line: '{file_parameter_full}')"
+            else:
+                # We found the line but couldn't parse the base name
+                warning_source = f"file header parameter line found ('{file_parameter_full}') but could not extract base name"
 
         warning_message = (
-            f"Note: Parameter mismatch? Selected '{expected_type}', but {warning_source}. Match Status: {match_status}. " # Added Match Status
-            "Processing anyway, but please verify."
+            f"Note: Parameter mismatch? Selected '{expected_type}', but {warning_source}. Processing anyway, but please verify."
         )
+        # Proceed with processing but return the warning message
         return True, warning_message
 
 
     except UnicodeDecodeError:
-        try: file.seek(0)
+        try: file.seek(0) # Try to rewind even on error
         except: pass
-        return False, "File cannot be read. Please ensure it's a valid text/CSV file (UTF-8 encoding preferred)."
+        # Return False (hard fail) because we can't read the file content at all
+        return False, "File reading error: Cannot decode file content. Please ensure it's a valid text/CSV file (UTF-8 encoding preferred)."
     except Exception as e:
         try: file.seek(0)
         except: pass
+        # Return False (hard fail) for other unexpected errors during verification
         return False, f"Error verifying file header: {str(e)}"
     
 # Function to get color for any group name (handles custom group names)
@@ -1143,152 +1259,458 @@ def verify_file_type(file, expected_type):
                 )
 
 def extract_cage_info(file):
-    """Extract cage information from file header"""
+    """
+    Extracts cage-to-subject ID mapping from the file header.
+
+    Reads the file line-by-line until the ':DATA' marker.
+
+    Args:
+        file: Uploaded file object.
+
+    Returns:
+        dict: Mapping of {standard_cage_label (e.g., "CAGE 01"): subject_id},
+              or an empty dict if extraction fails or no mapping is found.
+    """
+    cage_subject_map = {} # Use standard "CAGE XX" as key
+    current_cage_num_str = None # Stores raw number string like "101"
+    max_header_lines = 500 # Safety limit
+
     try:
-        content = file.read().decode()
         file.seek(0)
-        
-        cage_info = {}
-        lines = content.split('\n')
-        current_cage = None
-        
-        for line in lines:
-            if 'Group/Cage' in line:
-                current_cage = line.split(',')[-1].strip().lstrip('0')
-            elif 'Subject ID' in line and current_cage:
-                subject_id = line.split(',')[-1].strip()
-                cage_info[current_cage] = subject_id
-            elif ':DATA' in line:
-                break
-                
-        return cage_info
+        wrapper = io.TextIOWrapper(file, encoding='utf-8', errors='ignore')
+        line_count = 0
+
+        for line in wrapper:
+            line_strip = line.strip()
+            line_count += 1
+
+            if not line_strip: # Skip empty lines
+                continue
+
+            if ':DATA' in line_strip:
+                break # Stop processing header lines
+
+            if 'Group/Cage' in line_strip:
+                try:
+                    current_cage_num_str = line_strip.split(',')[-1].strip().lstrip('0')
+                except IndexError:
+                    # st.warning(f"Header parse warning: Could not get cage number from: '{line_strip}'") # Optional warning
+                    current_cage_num_str = None
+            elif 'Subject ID' in line_strip and current_cage_num_str is not None:
+                try:
+                    subject_id = line_strip.split(',')[-1].strip()
+                    # --- Standardize Cage Label ---
+                    cage_int = int(current_cage_num_str)
+                    if cage_int >= 101:
+                        standard_cage_label = f"CAGE {cage_int - 100:02d}"
+                        cage_subject_map[standard_cage_label] = subject_id
+                    # else: Skip cages < 101 silently, or add warning if needed
+                except (IndexError, ValueError) as e:
+                    # st.warning(f"Header parse warning: Failed processing Subject ID line for cage '{current_cage_num_str}': {e}") # Optional warning
+                    pass # Ignore line if parsing fails
+                # Reset cage num str to ensure next Subject ID line needs a preceding Cage line
+                current_cage_num_str = None
+
+            if line_count > max_header_lines:
+                 st.warning(f"Stopped reading header after {max_header_lines} lines; ':DATA' marker not found early.")
+                 break # Stop if header seems too long
+
+        wrapper.detach()
+        file.seek(0) # Rewind file for other functions
+
+        if not cage_subject_map:
+             st.caption("ℹ️ No cage-to-subject ID mapping found in file header.") # Use caption, not error
+
+        return cage_subject_map
+
     except Exception as e:
-        st.error(f"Error extracting cage information: {str(e)}")
-        return {}
+        st.error(f"Critical error during cage info extraction: {e}")
+        try: file.seek(0) # Attempt rewind
+        except: pass
+        return {} # Return empty dict on critical error
 
 def process_clams_data(file, parameter_type):
     """
     Adapted from working Colab analysis functions for Streamlit interface.
     """
     try:
-        # Read file content
-        content = file.read().decode('utf-8')
+        # Read file content efficiently line by line
+        header_lines = []
+        data_lines_raw = []
+        in_data_section = False
+        data_header_skipped = False # Flag to skip the '===' and 'INTERVAL...' lines
+
         file.seek(0)
+        wrapper = io.TextIOWrapper(file, encoding='utf-8', errors='ignore')
 
-        # Parse subject IDs
-        subject_map = {}
-        data_start = 0
-        for line in content.split('\n'):
+        for line in wrapper:
+            line_strip = line.strip()
+            if not line_strip: # Skip empty lines
+                continue
+
+            if ':DATA' in line_strip:
+                in_data_section = True
+                continue # Move to next line, don't add ":DATA" to either list
+
+            if not in_data_section:
+                header_lines.append(line_strip)
+            elif in_data_section:
+                # Skip the separator '===' and the actual data header 'INTERVAL TIME CAGE...'
+                if line_strip.startswith('===') or line_strip.startswith('INTERVAL'):
+                    if not data_header_skipped:
+                        data_header_skipped = True # Ensure we only skip these once
+                    continue
+                # Only add lines after the header if they are not empty
+                if line_strip:
+                    data_lines_raw.append(line) # Keep original line for splitting later
+
+        wrapper.detach() # Release wrapper
+
+        # --- Step 1: Parse Header for Subject Mapping ---
+        subject_map = {} # Maps "CAGE XX" to "Subject ID"
+        current_cage_num_str = None # Store the raw cage number string (e.g., "101")
+        for line in header_lines:
             if 'Group/Cage' in line:
-                cage_num = line.split(',')[-1].strip().lstrip('0')
-            elif 'Subject ID' in line and 'cage_num' in locals():
-                subject_id = line.split(',')[-1].strip()
-                cage_label = f"CAGE {int(cage_num) - 100:02d}"
-                subject_map[cage_label] = subject_id
-            elif ':DATA' in line:
-                break
+                try:
+                    # Extract the number after the last comma, remove leading zeros
+                    current_cage_num_str = line.split(',')[-1].strip().lstrip('0')
+                except IndexError:
+                    st.warning(f"Could not parse cage number from line: '{line}'")
+                    current_cage_num_str = None
+            elif 'Subject ID' in line and current_cage_num_str is not None:
+                try:
+                    subject_id = line.split(',')[-1].strip()
+                    # Convert raw cage num (e.g., "101") to standard format ("CAGE 01")
+                    cage_int = int(current_cage_num_str)
+                    if cage_int >= 101: # Basic check for CLAMS format
+                        cage_label = f"CAGE {cage_int - 100:02d}"
+                        subject_map[cage_label] = subject_id
+                    else:
+                        st.warning(f"Cage number '{current_cage_num_str}' seems unusual (expected >= 101). Skipping mapping for Subject ID '{subject_id}'.")
+                except (IndexError, ValueError) as e:
+                    st.warning(f"Could not parse Subject ID or format cage label for cage '{current_cage_num_str}' from line: '{line}'. Error: {e}")
+                # Reset cage num str to avoid mapping next Subject ID to wrong cage if format is weird
+                current_cage_num_str = None
 
-        # Find where data starts
-        lines = content.split('\n')
-        for i, line in enumerate(lines):
-            if ':DATA' in line:
-                data_start = i + 3
-                break
+        if not subject_map:
+            st.warning("Could not extract any Subject ID mappings from the file header. Subject IDs will be missing in results.")
 
-        # Process data exactly as in Colab
-        all_data = []
-        df_lines = [line.split(',') for line in lines[data_start:] if line.strip() and '=======' not in line]
-        
-        for i in range(1, len(df_lines[0])-1, 2):
-            time_col = i
-            value_col = i + 1
-            cage_num = (i // 2) + 1
+        # --- Step 2: Process Data Section ---
+        all_data = [] # List to hold DataFrames for each cage
+        # Split the raw data lines by comma
+        data_lines_split = [line.split(',') for line in data_lines_raw]
+
+        # Check if data_lines_split is populated
+        if not data_lines_split:
+            st.error("Error: No data lines found after the ':DATA' marker.")
+            return None, None, None
+        if len(data_lines_split[0]) < 3: # Need at least INTERVAL, TIME, CAGE 0101 Value cols
+            st.error("Error: Data section appears to have an incorrect column structure (less than 3 columns found).")
+            return None, None, None
+
+        # Determine the number of cages based on the first data row's columns
+        # (Num columns - 1 for INTERVAL) / 2 for TIME/VALUE pairs
+        num_data_columns = len(data_lines_split[0])
+        num_cages_detected = (num_data_columns - 1) // 2
+        if num_cages_detected < 1:
+            st.error("Error: Could not detect any CAGE data columns in the data section.")
+            return None, None, None
+
+        # Iterate through detected cages (cage_idx from 0 to num_cages_detected-1)
+        for cage_idx in range(num_cages_detected):
+            # Calculate column indices for this cage's TIME and VALUE
+            # TIME column index: 1, 3, 5, ... -> 1 + 2 * cage_idx
+            # VALUE column index: 2, 4, 6, ... -> 2 + 2 * cage_idx
+            time_col_idx = 1 + 2 * cage_idx
+            value_col_idx = 2 + 2 * cage_idx
+
+            # Generate the standard cage label (e.g., "CAGE 01", "CAGE 12")
+            # Add 1 to cage_idx because cages are 1-based
+            current_cage_label = f"CAGE {cage_idx + 1:02d}"
 
             times = []
             values = []
+            skipped_rows_count = 0
 
-            for row in df_lines:
-                if len(row) > value_col:
-                    t, v = row[time_col].strip(), row[value_col].strip()
-                    if t and v and not t.startswith('12:00:00') and t != "TIME":
+            # Iterate through each row of the split data
+            for row_num, row_data in enumerate(data_lines_split):
+                # Check if the current row has enough columns for this cage
+                if len(row_data) > value_col_idx:
+                    t_str = row_data[time_col_idx].strip()
+                    v_str = row_data[value_col_idx].strip()
+
+                    # Proceed only if both time and value strings are non-empty
+                    if t_str and v_str:
+                        # --- Datetime Parsing ---
+                        time_obj = None # Initialize
                         try:
-                            # Try both date formats exactly as in Colab
+                            # Try format 1: dd/mm/yyyy...
+                            time_obj = pd.to_datetime(t_str, format='%d/%m/%Y %I:%M:%S %p')
+                        except ValueError:
                             try:
-                                time = pd.to_datetime(t, format='%d/%m/%Y %I:%M:%S %p')
-                            except:
-                                time = pd.to_datetime(t, format='%m/%d/%Y %I:%M:%S %p')
-                            values.append(float(v))
-                            times.append(time)
-                        except Exception as e:
-                            continue
+                                # Try format 2: mm/dd/yyyy...
+                                time_obj = pd.to_datetime(t_str, format='%m/%d/%Y %I:%M:%S %p')
+                            except ValueError:
+                                # Both formats failed for this row
+                                skipped_rows_count += 1
+                                # Optional: Log the problematic row for debugging later
+                                # print(f"Skipping row {row_num+1} for cage {current_cage_label}: Cannot parse datetime '{t_str}'")
+                                continue # Skip to next row
 
-            if times:
-                cage_data = pd.DataFrame({
+                        # --- Value Parsing ---
+                        try:
+                            value_float = float(v_str)
+                            # Append successfully parsed data
+                            times.append(time_obj)
+                            values.append(value_float)
+                        except ValueError:
+                            # Value is not a valid float
+                            skipped_rows_count += 1
+                            # Optional: Log the problematic row
+                            # print(f"Skipping row {row_num+1} for cage {current_cage_label}: Cannot parse value '{v_str}'")
+                            continue # Skip to next row
+                    # else: Skip row if t_str or v_str is empty
+
+            # After processing all rows for this cage
+            if times: # Only create DataFrame if data was found
+                if skipped_rows_count > 0:
+                    # Inform user about skipped rows for this specific cage
+                    st.caption(f"ℹ️ For {current_cage_label}, {skipped_rows_count} data points were skipped due to parsing errors (time or value format).")
+
+                cage_df = pd.DataFrame({
                     'timestamp': times,
                     'value': values,
-                    'cage': f'CAGE {cage_num:02d}'
+                    'cage': current_cage_label # Use the standard label
                 })
-                all_data.append(cage_data)
+                all_data.append(cage_df)
+            elif not times and skipped_rows_count > 0:
+                # If no data was appended BUT rows were skipped, it means all rows had errors
+                st.warning(f"⚠️ No valid data points could be parsed for {current_cage_label}. All {skipped_rows_count} rows encountered parsing errors.")
+            # else: No data and no skipped rows likely means the columns were empty or file truncated.
 
+        # --- Final Checks and Concatenation ---
         if not all_data:
-            st.error("No valid data found in file")
+            st.error("Error: Failed to extract valid data for any cages after processing.")
             return None, None, None
 
-        # Combine all data and process time window
+      
+        # Combine DataFrames from all cages
         df_processed = pd.concat(all_data, ignore_index=True)
-        
-        # Determine days to analyze based on selected time window
-        if time_window == "Entire Dataset":
-            # Use all data without filtering by time
-            df_24h = df_processed.copy()
+
+        # Ensure data is sorted by timestamp for time-based operations
+        df_processed.sort_values(by='timestamp', inplace=True)
+        df_processed.reset_index(drop=True, inplace=True) # Reset index after sort
+
+        # --- Step 3: Filter Data Based on Selected Time Window ---
+        # Use a more descriptive variable name for the filtered data
+        df_analysis_window = None # Initialize
+
+        # Get the user's choice (assuming 'time_window' is passed correctly or accessible)
+        selected_window = time_window # Use local variable for clarity
+
+        if selected_window == "Entire Dataset":
+            df_analysis_window = df_processed.copy()
+            st.caption("ℹ️ Analyzing the entire dataset.") # Provide feedback
         else:
-            if time_window == "Custom Range":
-                days_to_analyze = st.session_state.get("custom_days_input", 5)
+            # --- Calculate required duration and check data availability ---
+            if selected_window == "Custom Range":
+                # Ensure custom days input is available and valid
+                custom_days_val = st.session_state.get("custom_days_input")
+                if isinstance(custom_days_val, (int, float)) and custom_days_val >= 1:
+                     days_to_analyze = int(custom_days_val)
+                else:
+                     st.warning(f"Invalid custom days value ({custom_days_val}). Defaulting to 5 days.", icon="⚠️")
+                     days_to_analyze = 5 # Fallback default
             else:
+                # Dictionary lookup for standard ranges
                 days_to_analyze = {
-                    "Last 24 Hours": 1,
-                    "Last 48 Hours": 2,
-                    "Last 72 Hours": 3,
-                    "Last 7 Days": 7,
-                    "Last 14 Days": 14
-                }.get(time_window, 1)  # Default to 1 day if not found
+                    "Last 24 Hours": 1, "Last 48 Hours": 2, "Last 72 Hours": 3,
+                    "Last 7 Days": 7, "Last 14 Days": 14
+                }.get(selected_window) # No default needed here, should always match UI options
 
-            end_time = df_processed['timestamp'].max()
-            start_time = end_time - pd.Timedelta(days=days_to_analyze)
-
-            # Add this check
-            total_hours = (df_processed['timestamp'].max() - df_processed['timestamp'].min()).total_seconds() / 3600
-            if total_hours < (days_to_analyze * 24):
-                st.error(f"Not enough data for {time_window} analysis. File contains approximately {total_hours:.1f} hours of data.")
+            if days_to_analyze is None: # Should not happen if UI options match dict keys
+                st.error(f"Internal Error: Unrecognized time window '{selected_window}'.")
                 return None, None, None
 
-            df_24h = df_processed[
-                (df_processed['timestamp'] >= start_time) &
-                (df_processed['timestamp'] <= end_time)
-            ].copy()
-        
-        # Apply lean mass adjustment if enabled
-        if parameter_type in ["VO2", "VCO2", "HEAT"] and 'lean_mass_data' in st.session_state and st.session_state.get("apply_lean_mass", False):
-            # Store original values
-            df_24h['original_value'] = df_24h['value'].copy()
-            
-            # Get reference mass from session state instead of creating a new input
-            reference_mass = st.session_state.get('reference_lean_mass', 20.0)
-            
-            # Apply adjustment based on cage
-            lean_mass_data = st.session_state['lean_mass_data']
-            for cage, lean_mass in lean_mass_data.items():
-                # Formula: adjusted_value = original_value * (reference_mass / lean_mass)
-                df_24h.loc[df_24h['cage'] == cage, 'value'] = df_24h.loc[df_24h['cage'] == cage, 'original_value'] * (reference_mass / lean_mass)
-            
-            # Add note about adjustment
-            st.info(f"{parameter_type} values have been normalized to a reference lean mass of {reference_mass}g")
+            required_duration = pd.Timedelta(days=days_to_analyze)
+            data_start_time = df_processed['timestamp'].min()
+            data_end_time = df_processed['timestamp'].max()
+            available_duration = data_end_time - data_start_time
 
-        # Add light/dark cycle using customizable times from session state
-        df_24h['hour'] = df_24h['timestamp'].dt.hour
-        light_start = st.session_state.get('light_start', 7)  # Default to 7AM if not set
-        light_end = st.session_state.get('light_end', 19)     # Default to 7PM if not set
-        df_24h['is_light'] = (df_24h['hour'] >= light_start) & (df_24h['hour'] < light_end)
+            if available_duration < required_duration:
+                st.error(f"Insufficient data for '{selected_window}' analysis ({days_to_analyze} days). "
+                         f"File contains only ~{available_duration.total_seconds() / 3600:.1f} hours "
+                         f"(from {data_start_time.strftime('%Y-%m-%d %H:%M')} to {data_end_time.strftime('%Y-%m-%d %H:%M')}).")
+                return None, None, None # Stop processing
+
+            # --- Perform filtering ---
+            # Calculate the start time for the *filter* based on the end of the data
+            filter_start_time = data_end_time - required_duration
+            # Ensure filter_start_time is not earlier than the actual data start
+            filter_start_time = max(filter_start_time, data_start_time)
+
+            # Apply the filter using .loc for clarity and efficiency
+            df_analysis_window = df_processed.loc[
+                (df_processed['timestamp'] >= filter_start_time) &
+                (df_processed['timestamp'] <= data_end_time)
+            ].copy() # Create a copy to avoid SettingWithCopyWarning
+
+            # Provide feedback on the time range actually used
+            actual_start_used = df_analysis_window['timestamp'].min()
+            actual_end_used = df_analysis_window['timestamp'].max()
+            st.caption(f"ℹ️ Analyzing data from {actual_start_used.strftime('%Y-%m-%d %H:%M')} to {actual_end_used.strftime('%Y-%m-%d %H:%M')} ({selected_window}).")
+
+
+        # Check if filtering resulted in an empty DataFrame
+        if df_analysis_window is None or df_analysis_window.empty:
+             st.error(f"Error: No data remaining after applying the '{selected_window}' time filter.")
+             return None, None, None
+
+        # --- Step 4: Apply Lean Mass Adjustment (if applicable) ---
+        df_analysis_window_final = df_analysis_window.copy() # Work on a copy for adjustment
+        adjustment_applied_successfully = False # Flag to track success
+        lean_mass_adjustment_info = [] # To collect messages
+
+        apply_adjustment_enabled = (
+            parameter_type in ["VO2", "VCO2", "HEAT"] and
+            st.session_state.get("apply_lean_mass", False)
+        )
+
+        # Add temporary print here for debugging
+        print(f"--- Inside process_clams_data ---")
+        print(f"Parameter: {parameter_type}")
+        print(f"Apply Lean Mass checkbox state (apply_lean_mass): {st.session_state.get('apply_lean_mass', 'Not Set')}")
+        print(f"Sidebar reference mass state (reference_lean_mass_sidebar_val): {st.session_state.get('reference_lean_mass_sidebar_val', 'Not Set')}")
+        print(f"Individual lean mass data (lean_mass_data): {st.session_state.get('lean_mass_data', 'Not Set')}")
+
+        if apply_adjustment_enabled:
+            print("--> Lean mass adjustment is ENABLED based on parameter and checkbox state.") # Debug
+            # --- Explicitly check for required session state variables ---
+            lean_mass_data = st.session_state.get('lean_mass_data')
+            # --- FIX: Use the CORRECT key for the reference mass value ---
+            reference_mass_val = st.session_state.get('reference_lean_mass_sidebar_val') # Use the specific key
+
+            # --- Detailed Check and Warning ---
+            proceed_with_adjustment = True # Assume we can proceed
+            warning_messages = []
+            if not isinstance(lean_mass_data, dict) or not lean_mass_data:
+                 warning_messages.append("Individual animal lean mass data has not been entered/saved yet (check Overview tab).")
+                 proceed_with_adjustment = False
+            # Check if the value is None OR if it's not a valid number (although number_input usually prevents this)
+            if reference_mass_val is None or not isinstance(reference_mass_val, (int, float)) or reference_mass_val <= 0:
+                 warning_messages.append(f"Reference lean mass value is missing or invalid ({reference_mass_val}). Set it in the sidebar.")
+                 proceed_with_adjustment = False
+
+            if not proceed_with_adjustment:
+                 # Combine warnings if multiple issues exist
+                 full_warning = "Lean mass adjustment enabled, but cannot proceed: " + " | ".join(warning_messages) + " Skipping adjustment."
+                 st.warning(full_warning, icon="⚠️")
+                 print(f"--> Skipping adjustment due to: {full_warning}") # Debug
+            else:
+                print(f"--> Proceeding with adjustment. Reference Mass: {reference_mass_val}, Individual Masses Found: {len(lean_mass_data)} entries.") # Debug
+                # --- Data seems available, attempt adjustment ---
+                reference_mass = reference_mass_val # Use the retrieved value
+
+                # Store original values if not already present and we are *actually* applying adjustment
+                if 'original_value' not in df_analysis_window_final.columns:
+                     df_analysis_window_final['original_value'] = df_analysis_window_final['value'].copy()
+                     print(f"--> Created 'original_value' column.") # Debug
+                else:
+                    # If adjustment was applied before, ensure 'value' starts from 'original_value'
+                    # This handles toggling the checkbox on/off correctly.
+                    df_analysis_window_final['value'] = df_analysis_window_final['original_value']
+                    print(f"--> Reset 'value' column from 'original_value' before reapplying adjustment.") # Debug
+
+
+                adjusted_cages_count = 0
+                skipped_cages_invalid_mass = set()
+                cages_in_window = set(df_analysis_window_final['cage'].unique())
+                provided_cages_mass = set(lean_mass_data.keys())
+
+                for cage_label in cages_in_window:
+                     if cage_label in lean_mass_data:
+                         lean_mass = lean_mass_data[cage_label]
+                         # Check if lean_mass is valid number > 0
+                         if isinstance(lean_mass, (int, float)) and lean_mass > 0:
+                              mask = (df_analysis_window_final['cage'] == cage_label)
+                              adjustment_factor = reference_mass / lean_mass
+                              # Apply adjustment based on ORIGINAL value
+                              df_analysis_window_final.loc[mask, 'value'] = df_analysis_window_final.loc[mask, 'original_value'] * adjustment_factor
+                              adjusted_cages_count += 1
+                              # Debug print for one cage
+                              if adjusted_cages_count == 1:
+                                   print(f"--> Adjusting {cage_label}: Indiv LM={lean_mass}, Ref LM={reference_mass}, Factor={adjustment_factor:.3f}")
+                                   # Print sample original vs adjusted values
+                                   sample_orig = df_analysis_window_final.loc[mask, 'original_value'].iloc[0]
+                                   sample_adj = df_analysis_window_final.loc[mask, 'value'].iloc[0]
+                                   print(f"    Sample: Original Value={sample_orig:.2f} -> Adjusted Value={sample_adj:.2f}")
+                         else:
+                              skipped_cages_invalid_mass.add(cage_label)
+                              print(f"--> Skipping {cage_label}: Invalid lean mass provided ({lean_mass}).") # Debug
+                              # If skipped, ensure the 'value' remains the 'original_value' for this cage
+                              mask = (df_analysis_window_final['cage'] == cage_label)
+                              if 'original_value' in df_analysis_window_final.columns:
+                                  df_analysis_window_final.loc[mask, 'value'] = df_analysis_window_final.loc[mask, 'original_value']
+                     else:
+                         # Cage exists in data but no lean mass was provided. Value should remain original.
+                         mask = (df_analysis_window_final['cage'] == cage_label)
+                         if 'original_value' in df_analysis_window_final.columns:
+                             df_analysis_window_final.loc[mask, 'value'] = df_analysis_window_final.loc[mask, 'original_value']
+
+
+                # --- Report Adjustment Status ---
+                # Use st.info/success/warning for user feedback
+                if adjusted_cages_count > 0:
+                     info_msg = f"✅ Lean mass normalization applied to {adjusted_cages_count} cage(s) using reference mass: {reference_mass:.1f}g."
+                     st.info(info_msg, icon="⚖️") # Use info instead of success for less visual noise
+                     lean_mass_adjustment_info.append(info_msg)
+                     print(f"--> Adjustment applied to {adjusted_cages_count} cages.") # Debug
+                     adjustment_applied_successfully = True # Set flag
+                elif proceed_with_adjustment:
+                     # If we intended to adjust but didn't adjust any cages
+                     info_msg = "Lean mass adjustment was enabled and data was present, but no cages were actually adjusted (check provided masses and cage IDs match data)."
+                     st.warning(info_msg, icon="❓")
+                     lean_mass_adjustment_info.append(info_msg)
+                     print(f"--> Adjustment enabled but no cages adjusted.") # Debug
+
+                if skipped_cages_invalid_mass:
+                     info_msg = f"⚠️ Adjustment skipped for cage(s) {skipped_cages_invalid_mass} due to invalid/zero mass value(s) provided."
+                     st.warning(info_msg, icon="❌")
+                     lean_mass_adjustment_info.append(info_msg)
+
+                cages_mass_not_in_window = provided_cages_mass - cages_in_window
+                if cages_mass_not_in_window:
+                     info_msg = f"ℹ️ Lean mass was provided for cages {cages_mass_not_in_window}, but these cages were not found in the '{selected_window}' data."
+                     st.caption(info_msg) # Caption is less intrusive
+                     lean_mass_adjustment_info.append(info_msg)
+
+                # Store summary message in session state? Maybe not necessary unless needed elsewhere.
+                # st.session_state['lean_mass_status_message'] = "\n".join(lean_mass_adjustment_info)
+
+        else: # Adjustment not enabled (either wrong param or checkbox off)
+             print(f"--> Lean mass adjustment is DISABLED.") # Debug
+             # If adjustment is disabled, ENSURE we are using the original values
+             # This handles the case where it was previously enabled, then disabled.
+             if 'original_value' in df_analysis_window_final.columns:
+                 df_analysis_window_final['value'] = df_analysis_window_final['original_value']
+                 print("--> Reset 'value' to 'original_value' as adjustment is now disabled.") # Debug
+             # Optionally remove the original_value column if adjustment is off? Maybe keep it for consistency.
+
+        # --- Step 5: Add Light/Dark Cycle Information ---
+        # Apply to the (potentially) adjusted DataFrame: df_analysis_window_final
+        df_analysis_window_final['hour'] = df_analysis_window_final['timestamp'].dt.hour
+        light_start = st.session_state.get('light_start', 7)
+        light_end = st.session_state.get('light_end', 19)
+        df_analysis_window_final['is_light'] = (df_analysis_window_final['hour'] >= light_start) & (df_analysis_window_final['hour'] < light_end)
+
+        # RENAME df_analysis_window_final back to df_24h for compatibility
+        # TODO: Refactor subsequent code
+        df_24h = df_analysis_window_final
+        # Add a final debug print before calculations
+        print("--- Dataframe head BEFORE final calculations (value column should be adjusted if applicable) ---")
+        print(df_24h[['timestamp', 'cage', 'value', 'original_value' if 'original_value' in df_24h.columns else 'value']].head())
+        # The rest of the function now operates on the correctly filtered and potentially adjusted data... (logic optimization)
+
         
         # Calculate results based on parameter type
         if parameter_type in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]: # UPDATED list
@@ -1423,7 +1845,6 @@ def process_clams_data(file, parameter_type):
 
         else:
             # --- Default Calculations (Metabolic, Gas, Environmental - Averages) ---
-            # Ensure this is indented correctly, matching the `elif` lines above
             results = df_24h.groupby(['cage', 'is_light'])['value'].mean().unstack()
 
             # Define potential column names based on boolean index
@@ -1441,7 +1862,6 @@ def process_clams_data(file, parameter_type):
             results = results.rename(columns=cols_to_rename)
 
             # --- Calculate TRUE Total Average ---
-            # The most accurate way is to calculate the mean directly from the period's data (df_24h) for each cage.
             # This avoids issues if light/dark cycles have different numbers of readings.
             overall_mean_per_cage = df_24h.groupby('cage')['value'].mean()
             results['Total Average'] = overall_mean_per_cage
@@ -1462,189 +1882,218 @@ def process_clams_data(file, parameter_type):
                 cols_to_round = [col for col in [final_dark_col, final_light_col, 'Total Average'] if col in results.columns]
                 if cols_to_round: # Check if list is not empty
                      results[cols_to_round] = results[cols_to_round].round(2)
+                     
+            # --- Let NaNs persist --- (NEW)
+            # Do NOT fill NaNs with 0 for average-based parameters.
+            # NaN correctly represents missing data for a cycle or cage.
+            # results = results.fillna(0) # REMOVED THIS LINE
+            
+# --- Add Subject IDs to the main results table ---
+        # Use .map() for safer mapping based on the index (cage labels)
+        results['Subject ID'] = results.index.map(subject_map)
+        # Handle cases where a cage in results might not be in subject_map (should be rare now)
+        if results['Subject ID'].isnull().any():
+             missing_cages = results[results['Subject ID'].isnull()].index.tolist()
+             st.warning(f"Could not find Subject ID mapping for cages: {missing_cages}", icon="❓")
 
 
-            # --- Removed fillna(0) ---
-            # Let NaNs persist for missing cycle data. Pandas aggregations (mean, std) handle NaNs by default.
-            # This prevents artificially pulling down group averages with zeros for missing data.
-
-                # Add subject IDs
-                results['Subject ID'] = pd.Series(subject_map)
-
-
-            # Fill any potential NaNs arising from calculations or merges
-            # FillNa should happen AFTER rounding to avoid converting NaNs to 0.00 etc.
-            results = results.fillna(0) # Fill remaining NaNs (e.g., if a cage had NO data at all)
-
-        # Add subject IDs
-        results['Subject ID'] = pd.Series(subject_map)
-
-        # Calculate hourly averages
+        # --- Calculate Hourly Averages ---
+        # Use pivot_table on the filtered data (df_24h)
         hourly_results = df_24h.pivot_table(
-            values='value',
-            index='hour',
-            columns='cage',
-            aggfunc='mean'
-        ).round(3 if parameter_type == "RER" else 2)
+            values='value',    # Values to aggregate
+            index='hour',      # Rows will be hours 0-23
+            columns='cage',    # Columns will be cage labels (CAGE 01, etc.)
+            aggfunc='mean'     # Aggregate function is mean
+        ) # Apply rounding later
 
-        # Ensure all 24 hours are present
+        # Ensure all 24 hours are present in the index, fill missing with NaN
         all_hours = pd.Index(range(24), name='hour')
         hourly_results = hourly_results.reindex(all_hours)
 
-        # Rename columns to subject IDs
-        hourly_results.columns = [f"{subject_map.get(cage, cage)}" for cage in hourly_results.columns]
+        # --- Rename columns to Subject IDs ---
+        # Create a reverse map: cage_label -> subject_id (handle missing mappings)
+        cage_to_subject = {v: k for k, v in subject_map.items()} # Simple reverse map
+        # Apply renaming, falling back to cage label if subject ID is unknown
+        hourly_results.columns = [cage_to_subject.get(cage, cage) for cage in hourly_results.columns]
 
-        # Add summary statistics
-        hourly_results['Mean'] = hourly_results.mean(axis=1).round(3 if parameter_type == "RER" else 2)
-        hourly_results['SEM'] = (hourly_results.std(axis=1) / np.sqrt(hourly_results.shape[1])).round(3 if parameter_type == "RER" else 2)
+        # --- Calculate Hourly Summary Statistics (Mean and Correct SEM) ---
+        # Calculate Mean across animals for each hour (axis=1), ignoring NaNs
+        hourly_results['Mean'] = hourly_results.mean(axis=1)
 
-        return results, hourly_results, df_24h
+        # Calculate N (count of non-NaN values) for each hour
+        hourly_n = hourly_results.drop(columns=['Mean'], errors='ignore').count(axis=1) # Count non-NaNs per row
 
+        # Calculate Standard Deviation for each hour, ignoring NaNs
+        hourly_std = hourly_results.drop(columns=['Mean'], errors='ignore').std(axis=1)
+
+        # Calculate SEM = StdDev / sqrt(N). Avoid division by zero or sqrt(0).
+        # Use np.where to handle N < 1 safely.
+        hourly_results['SEM'] = np.where(hourly_n > 0, hourly_std / np.sqrt(hourly_n), 0) # Assign 0 SEM if N=0
+
+        # --- Apply Rounding to Hourly Results ---
+        # Round based on parameter type AFTER all calculations
+        hourly_cols_to_round = hourly_results.columns # Get all columns including Mean/SEM
+        if parameter_type == "RER":
+            hourly_results[hourly_cols_to_round] = hourly_results[hourly_cols_to_round].round(3)
+        else:
+            hourly_results[hourly_cols_to_round] = hourly_results[hourly_cols_to_round].round(2)
+
+        # Return the main results, hourly results, and the filtered data window
+        return results, hourly_results, df_24h # df_24h is currently df_analysis_window
+
+    # Keep the broad exception handler for unexpected issues
     except Exception as e:
-        st.error(f"Error processing file: {str(e)}")
+        st.error(f"An unexpected error occurred during data processing: {e}")
+        # Optionally add more detailed logging here if needed
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}") # Show full traceback in error message
         return None, None, None
     
 def assign_groups(cage_df, key_prefix=''):
     """
-    Allow users to assign groups to detected subjects
+    Allow users to assign detected subjects to experimental groups using Streamlit UI.
+
+    Args:
+        cage_df (pd.DataFrame): DataFrame containing 'Cage' (e.g., "CAGE 01")
+                                and 'Subject ID' columns.
+        key_prefix (str): Unique prefix for Streamlit widget keys.
+
+    Returns:
+        pd.DataFrame or None: DataFrame with columns ["Group", "Cage", "Subject ID"]
+                              representing the assignments, or None if setup fails
+                              or user indicates subjects are incorrect.
     """
-    # First, show detected subjects and cages
+    if not isinstance(cage_df, pd.DataFrame) or not {'Cage', 'Subject ID'}.issubset(cage_df.columns):
+         st.error("Internal Error: Invalid input provided to assign_groups function (requires DataFrame with 'Cage' and 'Subject ID').")
+         return None
+
     st.write("Detected subjects:")
-    st.dataframe(cage_df)
-    
+    st.dataframe(cage_df[['Subject ID', 'Cage']].sort_values(by='Subject ID')) # Show sorted by ID
+
     subjects_correct = st.radio(
         "Are the detected subjects correct?",
         ["Yes", "No"],
         index=0,
-        key=f"{key_prefix}_subjects_correct_radio"
+        key=f"{key_prefix}_subjects_correct_radio",
+        horizontal=True # More compact
     )
-    
+
     if subjects_correct == "No":
-        st.error("CLAMSer is adapted specifically for raw Oxymax-CLAMS-CF Machine output. The uploaded file has likely been modified - Please ensure the uploaded file contains the correct subject information.")
+        st.error("Please ensure the uploaded file contains the correct subject information from the raw CLAMS output.")
         st.stop()
-    
-    # If subjects are correct, proceed with group assignment
+
+    # --- Proceed if subjects confirmed ---
     if subjects_correct == "Yes":
-        # Get number of groups from user
-        num_groups = st.number_input("How many groups do you want to create?", 
-                                    min_value=1, 
-                                    max_value=len(cage_df), 
-                                    value=2,
+        # --- Input: Number of Groups ---
+        num_groups = st.number_input("How many groups to create?",
+                                    min_value=1,
+                                    max_value=len(cage_df),
+                                    value=min(2, len(cage_df)), # Default to 2 or max animals if fewer
+                                    step=1,
                                     key=f"{key_prefix}_num_groups_input")
-        
-        # Create mapping between Subject ID and Cage ID
-        subject_to_cage = dict(zip(cage_df["Subject ID"].tolist(), cage_df["Cage"].tolist()))
-        
-        # Create group assignments
-        group_assignments = {}
-        
+
+        # --- Prepare Mappings ---
+        try:
+            # Ensure unique Subject IDs before creating map
+            if cage_df["Subject ID"].duplicated().any():
+                 st.error("Duplicate Subject IDs detected in the file header. Cannot proceed with group assignment.")
+                 return None
+            subject_to_cage = dict(zip(cage_df["Subject ID"], cage_df["Cage"]))
+            cage_to_subject = {v: k for k, v in subject_to_cage.items()} # Reverse map
+        except Exception as e:
+             st.error(f"Error creating subject/cage mapping: {e}")
+             return None
+
+        # --- Group Assignment UI Loop ---
+        assignments_in_progress = {} # Stores {group_name: [list_of_selected_subject_ids]}
+        all_assigned_subjects = set() # Track subjects assigned so far in this run
+
+        st.markdown("---") # Separator
+        st.write("**Define Groups:**")
+
+        cols = st.columns(num_groups) # Create columns for layout
+
         for i in range(num_groups):
-            st.subheader(f"Group {i + 1}")
-            
-            # Get group name
-            group_name = st.text_input(f"Name for Group {i + 1}", 
-                                      value=f"Group {i + 1}",
-                                      key=f"{key_prefix}_group_name_{i}")
-            
-            # Multi-select for subjects instead of cages
-            selected_subjects = st.multiselect(
-                f"Select subjects for {group_name}",
-                cage_df["Subject ID"].tolist(),
-                key=f"{key_prefix}_group_{i}"
-            )
-            
-            # Store the corresponding cage IDs for data processing
-            selected_cages = [subject_to_cage[subject] for subject in selected_subjects]
-            group_assignments[group_name] = selected_cages
-        
-        # Validate that all subjects are assigned
-        all_assigned_cages = [cage for group in group_assignments.values() for cage in group]
-        unassigned_cages = set(cage_df["Cage"]) - set(all_assigned_cages)
-        
-        if unassigned_cages:
-            # Convert cage IDs back to subject IDs for the warning message
-            unassigned_subjects = [cage_df[cage_df["Cage"] == cage]["Subject ID"].iloc[0] for cage in unassigned_cages]
-            st.warning(f"Warning: The following subjects are not assigned to any group: {', '.join(map(str, unassigned_subjects))}")
-        
-        # Check for duplicates
-        assigned_cages = []
-        duplicate_cages = []
-        for group, cages in group_assignments.items():
-            for cage in cages:
-                if cage in assigned_cages:
-                    duplicate_cages.append(cage)
-                assigned_cages.append(cage)
-        
-        if duplicate_cages:
-            # Convert cage IDs back to subject IDs for the error message
-            duplicate_subjects = [cage_df[cage_df["Cage"] == cage]["Subject ID"].iloc[0] for cage in duplicate_cages]
-            st.error(f"Error: The following subjects are assigned to multiple groups: {', '.join(map(str, set(duplicate_subjects)))}")
-            st.stop()
-        
-        # If everything is valid, create a summary dataframe
-        group_summary = []
-        for group_name, cages in group_assignments.items():
-            for cage in cages:
-                # --- Step 1: Get Subject ID ---
-                try:
-                    subject_id = cage_df[cage_df["Cage"] == cage]["Subject ID"].iloc[0]
-                except IndexError:
-                    # This happens if the cage from the multiselect isn't found in the DataFrame
-                    st.error(f"Data Error: Cage '{cage}' selected for Group '{group_name}' not found in the uploaded file's subject list. Skipping this entry.")
-                    continue # Skip to the next cage in the list
-                except Exception as e:
-                    # Catch any other unexpected errors during subject ID lookup
-                    st.error(f"Unexpected error finding Subject ID for Cage '{cage}': {e}. Skipping this entry.")
-                    continue # Skip to the next cage
+            with cols[i % len(cols)]: # Cycle through columns
+                st.markdown(f"##### Group {i + 1}") # Use markdown for subheader
 
-                # --- Step 2: Format Cage Name (if Subject ID was found) ---
-                consistent_cage_name = cage # Default to original cage name
-                try:
-                    # Extract number (e.g., '101'), subtract 100, format as 2 digits ('01')
-                    cage_num_match = re.search(r'(\d+)$', str(cage)) # Find digits at the end
-                    if cage_num_match:
-                        # Attempt conversion to integer
-                        cage_num = int(cage_num_match.group(1))
-                        # Check if it's likely a CLAMS cage number (>= 101)
-                        if cage_num >= 101:
-                            formatted_cage_num = cage_num - 100
-                            consistent_cage_name = f"CAGE {formatted_cage_num:02d}"
-                        else:
-                            # It's a number, but not in the expected CLAMS range, use original
-                            st.warning(f"Cage '{cage}' appears numeric but not in expected CLAMS format (>=101). Using original name.")
-                    else:
-                        # Non-numeric or unexpected format, use original
-                        st.warning(f"Unexpected cage format '{cage}' (non-numeric ending). Using original name.")
-                except ValueError:
-                    # Handle error if int() conversion fails (should be rare if re.search worked)
-                    st.warning(f"Error converting cage number part of '{cage}' to integer. Using original name.")
-                except Exception as e:
-                     # Catch any other unexpected errors during formatting
-                     st.warning(f"Error formatting cage '{cage}': {e}. Using original name.")
-                     # 'consistent_cage_name' already defaults to 'cage'
+                # Group Name Input
+                group_name = st.text_input(f"Name", # Shorter label
+                                          value=f"Group {i + 1}",
+                                          key=f"{key_prefix}_group_name_{i}")
 
-                # --- Step 3: Append to Summary (only if Steps 1 & 2 didn't 'continue') ---
-                group_summary.append({
-                    "Group": group_name,
-                    "Cage": consistent_cage_name, # Use the (potentially) formatted name
-                    "Subject ID": subject_id
-                })
-            # --- End of loop for this group's cages ---
-                
-        # Make sure we have at least one row before creating the DataFrame
-        if not group_summary:
-            # Return a DataFrame with correct columns even if empty
+                # Determine available subjects for this group's dropdown
+                available_options = sorted(list(set(subject_to_cage.keys()) - all_assigned_subjects))
+
+                # Subject Multi-Select
+                selected_subjects = st.multiselect(
+                    f"Select Subjects", # Shorter label
+                    options=available_options,
+                    key=f"{key_prefix}_group_subjects_{i}",
+                    # help="Select animals for this group. Already assigned animals are not shown." # Optional help text
+                    label_visibility="collapsed" # Use markdown header instead
+                )
+
+                # Store and update tracking sets
+                if group_name in assignments_in_progress:
+                     st.warning(f"Group name '{group_name}' used multiple times. Overwriting previous selection for this name.", icon="⚠️") # More direct warning
+                assignments_in_progress[group_name] = selected_subjects
+                # Update the master set of assigned subjects immediately
+                all_assigned_subjects.update(selected_subjects)
+
+        st.markdown("---") # Separator
+
+        # --- Validation and Summary ---
+        # Check for unassigned subjects AFTER loop
+        all_available_subjects = set(subject_to_cage.keys())
+        unassigned = all_available_subjects - all_assigned_subjects
+        if unassigned:
+            st.warning(f"**Unassigned Subjects:** {', '.join(map(str, sorted(list(unassigned))))}", icon="⚠️")
+
+        # Check for empty groups
+        empty_groups = [name for name, subjects in assignments_in_progress.items() if not subjects]
+        if empty_groups:
+            st.warning(f"**Empty Groups:** {', '.join(empty_groups)} have no subjects assigned.", icon="❓")
+
+
+        # --- Create Final Summary DataFrame ---
+        group_summary_list = []
+        final_group_names = set()
+
+        for group_name, subject_ids in assignments_in_progress.items():
+             # Skip potentially duplicate group names defined earlier but maybe cleared
+             if not group_name or group_name in final_group_names:
+                  # Add warning about duplicate group name consolidation if needed
+                  # st.caption(f"Note: Duplicate name '{group_name}' consolidated.")
+                  continue
+             final_group_names.add(group_name)
+
+             if not subject_ids: # Skip empty groups in the final output table
+                  continue
+
+             for subject_id in subject_ids:
+                 cage_id = subject_to_cage.get(subject_id) # Get cage using the map
+                 if cage_id: # Should always exist if subject_id came from multiselect options
+                    group_summary_list.append({
+                        "Group": group_name,
+                        "Cage": cage_id, # Standard "CAGE XX" format
+                        "Subject ID": subject_id
+                    })
+
+        if not group_summary_list:
+            st.info("No subjects assigned to any groups.")
+            # Return empty DataFrame with correct columns for consistency downstream
             return pd.DataFrame(columns=["Group", "Cage", "Subject ID"])
-            
-        group_summary_df = pd.DataFrame(group_summary)
-        
-        # Show the summary
-        st.subheader("Group Assignment Summary")
-        st.dataframe(group_summary_df)
-        
-        return group_summary_df
-    
-    return None
+        else:
+            group_summary_df = pd.DataFrame(group_summary_list)
+            # Sort for consistent display
+            group_summary_df.sort_values(by=['Group', 'Subject ID'], inplace=True)
+
+            st.subheader("Group Assignment Summary")
+            st.dataframe(group_summary_df)
+            return group_summary_df
+
+    return None # Should not be reached if 'Yes' is selected, but safety return
 
 def calculate_activity_results(df_24h):
     """Calculate results for activity parameters (XTOT, XAMB)"""
@@ -2393,30 +2842,44 @@ if uploaded_file is not None:
 
 
                                 elif parameter == "RER":
-                                    # --- RER Metrics --- [Corrected Display Swap]
+                                    # --- RER Metrics --- [CORRECTED - Values now match labels directly]
                                     col1, col2, col3 = st.columns([1, 1, 1])
-                                    light_avg_col = 'Light Average' # Column name where Light data SHOULD be
-                                    dark_avg_col = 'Dark Average'  # Column name where Dark data SHOULD be
+                                    light_avg_col = 'Light Average' # Standard column name for Light cycle average
+                                    dark_avg_col = 'Dark Average'   # Standard column name for Dark cycle average
 
-                                    # Check if both columns exist before attempting calculations
-                                    if light_avg_col in results.columns and dark_avg_col in results.columns:
-                                        # Calculate the means first
-                                        mean_of_light_col = results[light_avg_col].mean() # Should be ~0.860
-                                        mean_of_dark_col = results[dark_avg_col].mean()   # Should be ~0.843
+                                    # Check if both columns exist in the results DataFrame before attempting calculations
+                                    if results is not None and light_avg_col in results.columns and dark_avg_col in results.columns:
+                                        try:
+                                            # Calculate the overall mean across all animals for each column
+                                            # .mean() automatically handles NaN values if any animals were missing data
+                                            # The reliability of 'results' columns was confirmed by Colab manual checks
+                                            actual_overall_light_mean = results[light_avg_col].mean()
+                                            actual_overall_dark_mean = results[dark_avg_col].mean()
 
-                                        # Display with SWAPPED values to match the labels correctly
-                                        with col1:
-                                            # Display metric labelled "Average Light RER" but use the calculated mean_of_dark_col
-                                            st.metric("Average Light RER", f"{mean_of_dark_col:.3f}")
-                                        with col2:
-                                            # Display metric labelled "Average Dark RER" but use the calculated mean_of_light_col
-                                            st.metric("Average Dark RER", f"{mean_of_light_col:.3f}")
-                                        with col3:
-                                            # Animals Analyzed remains the same
-                                            st.metric("Animals Analyzed", f"{len(results)}")
+                                            # --- Display the CORRECT mean with the CORRECT label ---
+                                            with col1:
+                                                # Label: Average Light RER, Value: Use the calculated mean of the 'Light Average' column
+                                                st.metric("Average Light RER", f"{actual_overall_light_mean:.3f}")
+                                                # Optional Debug: st.caption(f"From col: {light_avg_col}")
+                                            with col2:
+                                                # Label: Average Dark RER, Value: Use the calculated mean of the 'Dark Average' column
+                                                st.metric("Average Dark RER", f"{actual_overall_dark_mean:.3f}")
+                                                # Optional Debug: st.caption(f"From col: {dark_avg_col}")
+                                            with col3:
+                                                # Animals Analyzed should still be correct
+                                                st.metric("Animals Analyzed", f"{len(results)}")
 
-                                    # Fallback if columns are missing (less likely now but safe)
+                                        except Exception as e:
+                                            st.error(f"Error calculating RER metrics: {e}")
+                                            # Display fallback if calculation fails
+                                            with col1: st.metric("Average Light RER", "Error")
+                                            with col2: st.metric("Average Dark RER", "Error")
+                                            with col3: st.metric("Animals Analyzed", f"{len(results)}")
+
+                                    # Fallback if the necessary columns 'Light Average' or 'Dark Average' are missing from the results DataFrame
                                     else:
+                                        st.warning(f"Cannot display RER metrics: Missing '{light_avg_col}' or '{dark_avg_col}' columns in results.")
+                                        st.dataframe(results.head()) # Show head of results table to help debug column names
                                         with col1: st.metric("Average Light RER", "N/A")
                                         with col2: st.metric("Average Dark RER", "N/A")
                                         with col3: st.metric("Animals Analyzed", f"{len(results)}")
@@ -2826,114 +3289,125 @@ if uploaded_file is not None:
                     # --- Consolidated Setup Expander ---
                     st.markdown("---") # Add separator after the plot
 
+                    # --- Overview Tab ---
+                    # ... (code before the expander) ...
+
                     # --- Setup Section (NOW AN EXPANDER) ---
-                    with st.expander("⚙️ Setup: Groups & Lean Mass", expanded=True): # Wrap in an expander, initially expanded
+                    # Remove the invalid key from st.expander
+                    with st.expander("⚙️ Setup: Groups & Lean Mass", expanded=False): # NO key=... here
 
-                        # NOTE: Everything below this line needs to be indented one level further than it was before
-
-                        # The original st.container(border=True) can optionally be kept inside for visual grouping,
-                        # or removed if the expander itself provides enough separation. Let's keep it for now.
+                        # Keep the container for visual grouping inside the expander
                         with st.container(border=True):
 
                             # --- Group Assignment Content (Inside Expander & Container) ---
-                            st.subheader("1. Assign Animals to Groups") # Subheader is fine inside expander
-                            st.info("Assign animals to experimental groups. Required for Statistical Analysis and Publication Plots.")
+                            st.subheader("1. Assign Animals to Groups")
+                            st.info("Assign animals to experimental groups is needed for more sophisticated analysis.")
 
-                            # Check if cage_info is available
-                            if 'cage_info' in locals() and cage_info:
-                                # Create cage_df if needed (using consistent "CAGE XX" format)
-                                if 'cage_df' not in locals():
-                                    cage_df = pd.DataFrame([
-                                        {"Cage": f"CAGE {int(k)-100:02d}" if k.isdigit() and int(k) >= 101 else k, "Subject ID": v}
-                                        for k, v in cage_info.items()
-                                    ])
+                            # --- Robustness check for cage_info ---
+                            if 'cage_info' not in st.session_state or not st.session_state['cage_info']:
+                                if uploaded_file is not None:
+                                    # Attempt to extract cage_info ONLY if it's missing and a file exists
+                                    try:
+                                        # Ensure the file pointer is at the beginning before re-reading
+                                        uploaded_file.seek(0)
+                                        st.session_state['cage_info'] = extract_cage_info(uploaded_file)
+                                        uploaded_file.seek(0) # Rewind again after extraction
+                                        print("Re-extracted cage_info.") # Debug
+                                        if not st.session_state['cage_info']: # Check if extraction failed
+                                            st.error("Failed to extract cage info on the fly. Please re-upload.")
+                                            cage_info_available = False
+                                        else:
+                                             cage_info_available = True
+                                    except Exception as e:
+                                        st.error(f"Error re-extracting cage info: {e}")
+                                        cage_info_available = False
 
-                                # Call the group assignment function (use a unique key prefix)
-                                group_assignments_result = assign_groups(cage_df, key_prefix="overview_setup_expander")
-
-                                # Store results in session state
-                                if group_assignments_result is not None and not group_assignments_result.empty:
-                                    st.session_state['group_assignments'] = group_assignments_result
-
+                                else:
+                                    st.error("Cannot assign groups: Upload a data file first.")
+                                    cage_info_available = False
                             else:
-                                st.error("Cannot assign groups: Cage information was not extracted correctly.")
+                                cage_info_available = True
+                            # --- END OF ROBUSTNESS CHECK ---
+
+
+                            if cage_info_available: # Only proceed if cage_info is confirmed available
+                                # Create cage_df from stored cage_info
+                                cage_list = [{"Cage": k, "Subject ID": v} for k, v in st.session_state['cage_info'].items()]
+                                if cage_list:
+                                    cage_df = pd.DataFrame(cage_list)
+                                else:
+                                    cage_df = pd.DataFrame(columns=["Cage", "Subject ID"])
+
+                                if not cage_df.empty:
+                                    # --- Group Assignment UI ---
+                                    # This function 'assign_groups' might trigger reruns itself depending on its widgets (multiselect).
+                                    # This is generally acceptable for group assignment as it affects downstream stats availability.
+                                    group_assignments_result = assign_groups(cage_df, key_prefix="overview_setup_expander")
+                                    # Store results immediately if they are valid
+                                    if group_assignments_result is not None and not group_assignments_result.empty:
+                                        # Check if it's different from current state before assigning to avoid unnecessary state changes
+                                        if not group_assignments_result.equals(st.session_state.get('group_assignments')):
+                                            st.session_state['group_assignments'] = group_assignments_result
+                                            print("Updated group assignments in session state.") # Debug
+                                else:
+                                    st.warning("Could not create DataFrame for group assignment.")
+
 
                             # --- Lean Mass Content (Inside Expander & Container & Conditional) ---
-                            st.markdown("---") # Separator within the container/expander
-                            st.subheader("2. Enter Lean Mass (Optional)") # Subheader is fine inside expander
+                            st.markdown("---") # Separator
+                            st.subheader("2. Enter Lean Mass (Optional)")
 
-                            # Check parameter relevance first
                             if parameter in ["VO2", "VCO2", "HEAT"]:
-                                # Check if checkbox is ticked in sidebar
                                 if st.session_state.get("apply_lean_mass", False):
+                                    # Message indicating adjustment is enabled
                                     st.markdown(f"""
-                                    Lean mass adjustment is **enabled** (sidebar setting). Enter values to normalize **{parameter}**
-                                    to a reference lean mass of **{st.session_state.get('reference_lean_mass', 20.0)}g**.
+                                    Lean mass adjustment is **enabled** (sidebar setting). Enter values below and click 'Apply Lean Mass Changes' to update the analysis. Reference mass: **{st.session_state.get('reference_lean_mass_sidebar_val', 20.0):.1f}g** (set in sidebar).
                                     """)
 
-                                    lean_mass_inputs = {}
-                                    if 'cage_info' in locals() and cage_info:
+                                    if cage_info_available: # Use the flag from the check above
                                         cols = st.columns(3)
-                                        for i, (cage_id, subject_id) in enumerate(cage_info.items()):
-                                            try:
-                                                # Ensure cage_label matches keys used elsewhere (e.g., "CAGE 01")
-                                                # Robust check for digits and range
-                                                cage_num_str = ''.join(filter(str.isdigit, str(cage_id)))
-                                                if cage_num_str and int(cage_num_str) >= 101:
-                                                    cage_num_display = int(cage_num_str) - 100
-                                                    cage_label = f"CAGE {cage_num_display:02d}"
-                                                else:
-                                                    # Fallback if not typical format
-                                                    cage_label = f"{subject_id}_{cage_id}" if subject_id else f"Unknown_{cage_id}"
-                                                    st.warning(f"Using fallback label '{cage_label}' for cage ID '{cage_id}'. Check format if issues arise.", icon="⚠️")
-
-                                            except Exception as e: # Broad exception for safety during formatting
-                                                cage_label = f"ErrorCage_{i}" # Fallback label on error
-                                                st.error(f"Error creating label for cage {cage_id}: {e}")
-
+                                        # --- THIS IS THE LOOP FOR NUMBER INPUTS ---
+                                        # These inputs update their OWN state via their key on change.
+                                        for i, (cage_label, subject_id) in enumerate(st.session_state['cage_info'].items()):
+                                            widget_key = f"lean_mass_{cage_label}_setup_expander"
                                             with cols[i % 3]:
-                                                # Use a unique key for inputs inside this expander
-                                                lean_mass = st.number_input(
-                                                    f"Lean mass (g) for {subject_id} ({cage_label})",
+                                                # The value displayed comes from the widget's own state key
+                                                st.number_input(
+                                                    f"LM (g) for {subject_id} ({cage_label})", # Shortened label
                                                     min_value=1.0,
-                                                    # Retrieve value based on the consistent cage_label format
+                                                    # Set initial value from lean_mass_data if available, else default
                                                     value=st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0),
                                                     step=0.1,
                                                     format="%.1f",
-                                                    # Regenerate the key to ensure it's unique based on the final cage_label
-                                                    key=f"lean_mass_{cage_label}_setup_expander"
+                                                    key=widget_key, # Crucial: Each input has a unique key
+                                                    label_visibility="visible" # Ensure label is shown
                                                 )
-                                                # Store using the potentially formatted/fallback cage_label
-                                                lean_mass_inputs[cage_label] = lean_mass
+                                        # --- END OF THE LOOP ---
 
+                                        # --- ADD THE BUTTON ---
+                                        # This button's callback will read all number inputs and trigger the rerun
+                                        st.button("Apply Lean Mass Changes",
+                                                  on_click=apply_lean_mass_changes, # Use the new callback
+                                                  key="apply_lm_button",
+                                                  help="Click to update the analysis tables and plots with the lean mass values entered above.")
+                                        # --- END OF ADDED BUTTON ---
 
-                                        # Store in session state immediately
-                                        st.session_state['lean_mass_data'] = lean_mass_inputs
-
+                                        # Formula caption (no change needed)
                                         st.caption(f"""
-                                        **Formula:** Adjusted {parameter} = Original {parameter} × (Reference Mass ÷ Animal's Lean Mass)
-                                        *(Example: Ref: 20g, Animal: 25g, Original {parameter}: 3000 -> Adjusted: 2400)*
+                                        **Formula:** Adj. Value = Orig. Value × (Reference Mass ÷ Animal LM)...
                                         """)
                                     else:
                                         st.warning("Cannot display lean mass inputs: Cage information missing.")
 
-                                else:
-                                    # Option is available but disabled in sidebar
-                                    st.markdown("**(Optional) Lean mass adjustment is currently disabled.** Enable it in the sidebar settings if needed.")
-                            else:
-                                # Not relevant for this parameter
+                                else: # apply_lean_mass is False
+                                    st.markdown("**(Optional) Lean mass adjustment is currently disabled.** Enable it in the sidebar settings. If enabled, enter values and click 'Apply Lean Mass Changes'.")
+                            else: # Parameter not relevant
+                                # Parameter not relevant logic... (no changes needed here)
                                 if st.session_state.get("apply_lean_mass", False):
                                     st.warning(f"Lean mass adjustment is enabled (sidebar), but not applicable for '{parameter}'. No adjustment will be made.")
                                 else:
                                     st.markdown(f"*(Lean mass adjustment is not applicable for '{parameter}')*")
-
-                        # --- End of the inner st.container(border=True) block ---
-
                     # --- End of the Setup Expander --- (End of the `with st.expander...` block)
-                    # The separator st.markdown("---") that was AFTER the original container is now effectively handled by the expander boundary.
-                    # You might choose to keep or remove the separator originally *after* the container block depending on desired spacing. Let's remove it for now.
-
-                    # --- END OF REPLACEMENT BLOCK ---
                     
                     # 4. TABLES - Enhanced data tables with better organization and interactivity
                     st.header("📋 Detailed Analysis Tables")
