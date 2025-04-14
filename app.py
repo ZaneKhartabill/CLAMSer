@@ -63,6 +63,69 @@ def apply_lean_mass_changes():
 
 # ------------- END JUMBO MUMBO -------------
 
+
+# ------------- NEW: Statistical Assumption Check Helpers -------------
+
+def check_normality(data, alpha=0.05):
+    """
+    Performs Shapiro-Wilk test for normality on data.
+
+    Args:
+        data (array-like): Data points (e.g., residuals or group data).
+        alpha (float): Significance level.
+
+    Returns:
+        tuple: (is_normal: bool, p_value: float, test_stat: float)
+               Returns (None, None, None) if test cannot be performed.
+    """
+    # Ensure data is usable
+    data_clean = np.asarray(data) # Convert to numpy array
+    data_clean = data_clean[~np.isnan(data_clean)] # Remove NaNs
+
+    if len(data_clean) < 3: # Shapiro-Wilk needs at least 3 data points
+        # st.caption("Normality check skipped (N<3)") # Optional debug message
+        return None, None, None # Cannot perform test
+
+    try:
+        test_stat, p_value = stats.shapiro(data_clean)
+        is_normal = p_value >= alpha
+        return is_normal, p_value, test_stat
+    except Exception as e:
+        # st.warning(f"Shapiro-Wilk test failed: {e}") # Optional debug message
+        return None, None, None
+
+def check_homogeneity(groups_data, alpha=0.05):
+    """
+    Performs Levene's test for homogeneity of variances across groups.
+
+    Args:
+        groups_data (list of array-like): A list where each element is the
+                                           data for one group.
+        alpha (float): Significance level.
+
+    Returns:
+        tuple: (is_homogeneous: bool, p_value: float, test_stat: float)
+               Returns (None, None, None) if test cannot be performed.
+    """
+    # Clean data: Remove groups with fewer than 2 data points (Levene needs >=2)
+    valid_groups_data = [np.asarray(g)[~np.isnan(np.asarray(g))] for g in groups_data]
+    valid_groups_data = [g for g in valid_groups_data if len(g) >= 2]
+
+    if len(valid_groups_data) < 2: # Levene needs at least 2 groups
+        # st.caption("Homogeneity check skipped (less than 2 valid groups)") # Optional debug
+        return None, None, None # Cannot perform test
+
+    try:
+        test_stat, p_value = stats.levene(*valid_groups_data, center='median') # Use median for robustness
+        is_homogeneous = p_value >= alpha
+        return is_homogeneous, p_value, test_stat
+    except Exception as e:
+        # st.warning(f"Levene's test failed: {e}") # Optional debug
+        return None, None, None
+
+# ------------- END: Statistical Assumption Check Helpers -------------
+
+
 # Page setup + title
 st.set_page_config(
     page_title="CLAMSer",
@@ -683,6 +746,7 @@ def style_dataframe(df, z_score_threshold=2, skip_cols_outlier=None):
          st.warning(f"Could not apply outlier styling: {e}. Displaying unstyled table.")
          return df # Return unstyled df on error
 
+
 def verify_file_type(file, expected_type):
     """
     Verify if uploaded file matches expected parameter type by checking the header.
@@ -707,6 +771,8 @@ def verify_file_type(file, expected_type):
         line_count = 0
 
         file.seek(0)
+        # Use io.TextIOWrapper for proper handling of text decoding
+        # errors='ignore' might hide some issues, but is often necessary for non-standard files
         wrapper = io.TextIOWrapper(file, encoding='utf-8', errors='ignore')
 
         for line in wrapper:
@@ -726,22 +792,24 @@ def verify_file_type(file, expected_type):
 
             if ':DATA' in line_strip:
                 has_data_tag = True
-                break
+                break # Found data marker, stop reading header
 
             if line_count > max_header_lines:
-                break
+                break # Safety break if header is too long
 
-        file.seek(0) # Rewind file pointer
+        file.seek(0) # Rewind file pointer after reading header
         wrapper.detach() # Detach wrapper without closing underlying file stream
 
         # --- Perform validation based on findings ---
         if not has_parameter_file_tag:
-             return False, "File format error: Expected 'PARAMETER File' tag in the first line." # Hard fail
+             # Hard fail if the first line doesn't identify the file type
+             return False, "File format error: Expected 'PARAMETER File' tag in the first line. Please ensure this is a CLAMS/Oxymax output file."
         if not has_data_tag:
+             # Hard fail if the :DATA marker is missing (crucial for parsing)
              if line_count > max_header_lines:
-                 return False, f"File structure error: ':DATA' marker not found within the first {max_header_lines} lines. File might be corrupt or incomplete." # Hard fail
+                 return False, f"File structure error: ':DATA' marker not found within the first {max_header_lines} lines. File might be corrupt, incomplete, or not a valid CLAMS data file."
              else:
-                 return False, "File structure error: ':DATA' marker not found." # Hard fail
+                 return False, "File structure error: ':DATA' marker not found. This is required to locate the numerical data."
 
         # --- Check parameter match ---
         file_parameter_base = None # Extracted base name (e.g., "VO2")
@@ -749,9 +817,9 @@ def verify_file_type(file, expected_type):
 
         if file_parameter_full:
             # --- Revised Base Name Extraction ---
-            # Match common patterns: NAME (UNIT), NAME, potentially with spaces
-            # 1. Try matching "NAME (UNIT)" pattern first
-            base_name_match = re.match(r"^\s*([a-zA-Z0-9/]+(?:\s+[a-zA-Z0-9/]+)*)\s+\(.*\)\s*$", file_parameter_full)
+            # Try to match common patterns: NAME (UNIT), NAME, potentially with spaces
+            # 1. Try matching "NAME (UNIT)" pattern first (allows spaces in NAME)
+            base_name_match = re.match(r"^\s*([a-zA-Z0-9/\s]+?)\s+\(.*\)\s*$", file_parameter_full)
             if base_name_match:
                 file_parameter_base = base_name_match.group(1).strip()
                 match_status = f"Parsed '{file_parameter_base}' from '{file_parameter_full}' (with unit)"
@@ -761,6 +829,9 @@ def verify_file_type(file, expected_type):
                 base_name_match = re.match(r"^\s*([a-zA-Z0-9/\s]+)\s*$", file_parameter_full)
                 if base_name_match:
                      file_parameter_base = base_name_match.group(1).strip()
+                     # Handle potential FEED variations
+                     if file_parameter_base.upper() == "FEED1 ACC":
+                         file_parameter_base = "FEED1 ACC" # Keep specific case
                      match_status = f"Parsed '{file_parameter_base}' from '{file_parameter_full}' (no unit)"
                 else:
                     # Failed to parse base name even though file_parameter_full was found
@@ -779,24 +850,30 @@ def verify_file_type(file, expected_type):
         # Case 2: Special handling for FEED vs FEED1 ACC
         # Check if user selected "FEED" and file contains "FEED1 ACC"
         if expected_upper == "FEED" and found_upper == "FEED1 ACC":
-            return True, "" # Treat as valid match, no warning needed
+            # Treat as valid match, but provide an informational message
+            info_message = (
+                f"ℹ️ Note: You selected 'FEED', and the file appears to be '{file_parameter_base}'. "
+                "This is likely correct (using accumulated feed data). Processing continues."
+            )
+            return True, info_message
 
-        # Case 3: No exact match, issue a warning but allow processing
+        # Case 3: No exact match, issue a clearer warning but allow processing
         warning_source = "parameter information not found or unreadable in header" # Default source
         if file_parameter_full:
             if file_parameter_base:
                 # We parsed something, but it didn't match
-                warning_source = f"file header indicates parameter '{file_parameter_base}' (from line: '{file_parameter_full}')"
+                warning_source = f"file header indicates parameter is '{file_parameter_base}' (from line: '{file_parameter_full}')"
             else:
                 # We found the line but couldn't parse the base name
                 warning_source = f"file header parameter line found ('{file_parameter_full}') but could not extract base name"
 
+        # --- Use st.warning format for the message ---
         warning_message = (
-            f"Note: Parameter mismatch? Selected '{expected_type}', but {warning_source}. Processing anyway, but please verify."
+            f"⚠️ **Parameter Mismatch?** Selected '{expected_type}', but {warning_source}. "
+            "Processing anyway, but **please verify you uploaded the correct file for the selected parameter.**"
         )
-        # Proceed with processing but return the warning message
+        # Proceed with processing but return the prominent warning message
         return True, warning_message
-
 
     except UnicodeDecodeError:
         try: file.seek(0) # Try to rewind even on error
@@ -1331,204 +1408,212 @@ def extract_cage_info(file):
 
 def process_clams_data(file, parameter_type):
     """
-    Adapted from working Colab analysis functions for Streamlit interface.
+    Processes the uploaded CLAMS data file with improved robustness and error reporting.
+
+    Steps:
+    1. Reads header and raw data lines separately.
+    2. Parses the header to extract cage-to-subject ID mapping.
+    3. Parses the data section row-by-row, cage-by-cage, with robust error handling
+       for datetime and numeric values, collecting parsing errors.
+    4. Reports a summary of parsing errors encountered.
+    5. Concatenates valid data, validates its existence.
+    6. Filters the data based on the selected time window from st.session_state.
+    7. Applies lean mass normalization if enabled and applicable (uses st.session_state).
+    8. Adds light/dark cycle information based on st.session_state settings.
+    9. Calculates summary metrics (light/dark/total) based on parameter type.
+    10. Calculates hourly metrics (0-23 profile).
+    11. Returns summary results, hourly results, and the final processed DataFrame.
+
+    Args:
+        file (UploadedFile): The file object uploaded by the user.
+        parameter_type (str): The parameter selected by the user (e.g., "VO2").
+
+    Returns:
+        tuple: (results_df, hourly_results_df, processed_data_df) or (None, None, None) if errors occur.
     """
+    st.write("--- Debug: Entering process_clams_data ---") # Temporary debug
     try:
-        # Read file content efficiently line by line
+        # --- Section 1: Read Header & Data Lines ---
         header_lines = []
         data_lines_raw = []
         in_data_section = False
-        data_header_skipped = False # Flag to skip the '===' and 'INTERVAL...' lines
+        data_header_skipped = False
+        header_line_count = 0
+        data_start_line_num = -1 # Track where ':DATA' was found
 
         file.seek(0)
         wrapper = io.TextIOWrapper(file, encoding='utf-8', errors='ignore')
 
-        for line in wrapper:
+        for i, line in enumerate(wrapper):
             line_strip = line.strip()
-            if not line_strip: # Skip empty lines
-                continue
-
-            if ':DATA' in line_strip:
-                in_data_section = True
-                continue # Move to next line, don't add ":DATA" to either list
+            if not line_strip: continue # Skip empty lines
 
             if not in_data_section:
                 header_lines.append(line_strip)
+                header_line_count += 1
+                if ':DATA' in line_strip:
+                    in_data_section = True
+                    data_start_line_num = i + 1 # 1-based line number
+                    continue # Don't add :DATA line itself
+
             elif in_data_section:
-                # Skip the separator '===' and the actual data header 'INTERVAL TIME CAGE...'
+                # Skip separator '===' and header 'INTERVAL...'
                 if line_strip.startswith('===') or line_strip.startswith('INTERVAL'):
-                    if not data_header_skipped:
-                        data_header_skipped = True # Ensure we only skip these once
+                    if not data_header_skipped: data_header_skipped = True
                     continue
-                # Only add lines after the header if they are not empty
-                if line_strip:
-                    data_lines_raw.append(line) # Keep original line for splitting later
+                if line_strip: # Only add non-empty lines after skipping header
+                    data_lines_raw.append(line) # Keep original line formatting
 
         wrapper.detach() # Release wrapper
 
-        # --- Step 1: Parse Header for Subject Mapping ---
-        subject_map = {} # Maps "CAGE XX" to "Subject ID"
-        current_cage_num_str = None # Store the raw cage number string (e.g., "101")
+        if data_start_line_num == -1:
+             st.error("❌ Critical Error: ':DATA' marker not found in the file. Cannot process.")
+             return None, None, None
+
+        # --- Section 2: Parse Header (Subject Mapping) ---
+        subject_map = {}
+        current_cage_num_str = None
         for line in header_lines:
+            # Simplified parsing (assumes format based on previous code)
             if 'Group/Cage' in line:
-                try:
-                    # Extract the number after the last comma, remove leading zeros
-                    current_cage_num_str = line.split(',')[-1].strip().lstrip('0')
-                except IndexError:
-                    st.warning(f"Could not parse cage number from line: '{line}'")
-                    current_cage_num_str = None
+                try: current_cage_num_str = line.split(',')[-1].strip().lstrip('0')
+                except IndexError: current_cage_num_str = None
             elif 'Subject ID' in line and current_cage_num_str is not None:
                 try:
                     subject_id = line.split(',')[-1].strip()
-                    # Convert raw cage num (e.g., "101") to standard format ("CAGE 01")
                     cage_int = int(current_cage_num_str)
-                    if cage_int >= 101: # Basic check for CLAMS format
+                    if cage_int >= 101: # Basic CLAMS format check
                         cage_label = f"CAGE {cage_int - 100:02d}"
                         subject_map[cage_label] = subject_id
-                    else:
-                        st.warning(f"Cage number '{current_cage_num_str}' seems unusual (expected >= 101). Skipping mapping for Subject ID '{subject_id}'.")
-                except (IndexError, ValueError) as e:
-                    st.warning(f"Could not parse Subject ID or format cage label for cage '{current_cage_num_str}' from line: '{line}'. Error: {e}")
-                # Reset cage num str to avoid mapping next Subject ID to wrong cage if format is weird
-                current_cage_num_str = None
+                except (IndexError, ValueError): pass # Ignore parsing errors here silently for now
+                current_cage_num_str = None # Reset for next pair
 
         if not subject_map:
-            st.warning("Could not extract any Subject ID mappings from the file header. Subject IDs will be missing in results.")
+            st.caption("ℹ️ No Subject ID mappings found in file header.")
 
-        # --- Step 2: Process Data Section ---
-        all_data = [] # List to hold DataFrames for each cage
-        # Split the raw data lines by comma
+        # --- Section 3: Parse Data Section (Robustly) ---
+        st.write(f"--- Debug: Starting Data Parsing. Found {len(data_lines_raw)} raw data lines. ---") # Temp debug
+        all_data_cages = [] # List to hold DataFrames for each cage
+        parsing_errors = [] # Collect parsing errors
+        max_errors_to_report = 15
+
+        # Split lines only once
         data_lines_split = [line.split(',') for line in data_lines_raw]
 
-        # Check if data_lines_split is populated
         if not data_lines_split:
-            st.error("Error: No data lines found after the ':DATA' marker.")
-            return None, None, None
-        if len(data_lines_split[0]) < 3: # Need at least INTERVAL, TIME, CAGE 0101 Value cols
-            st.error("Error: Data section appears to have an incorrect column structure (less than 3 columns found).")
+            st.error("❌ Error: No data lines found after ':DATA' marker (empty data section?).")
             return None, None, None
 
-        # Determine the number of cages based on the first data row's columns
-        # (Num columns - 1 for INTERVAL) / 2 for TIME/VALUE pairs
         num_data_columns = len(data_lines_split[0])
         num_cages_detected = (num_data_columns - 1) // 2
+
         if num_cages_detected < 1:
-            st.error("Error: Could not detect any CAGE data columns in the data section.")
+            st.error(f"❌ Error: Could not detect valid CAGE data columns. Found {num_data_columns} columns in first data row. Check file structure.")
+            st.code(f"First data line: {data_lines_raw[0]}" if data_lines_raw else "No data lines")
             return None, None, None
 
-        # Iterate through detected cages (cage_idx from 0 to num_cages_detected-1)
+        st.write(f"--- Debug: Detected {num_cages_detected} cages based on {num_data_columns} columns. ---") # Temp debug
+
         for cage_idx in range(num_cages_detected):
-            # Calculate column indices for this cage's TIME and VALUE
-            # TIME column index: 1, 3, 5, ... -> 1 + 2 * cage_idx
-            # VALUE column index: 2, 4, 6, ... -> 2 + 2 * cage_idx
             time_col_idx = 1 + 2 * cage_idx
             value_col_idx = 2 + 2 * cage_idx
-
-            # Generate the standard cage label (e.g., "CAGE 01", "CAGE 12")
-            # Add 1 to cage_idx because cages are 1-based
             current_cage_label = f"CAGE {cage_idx + 1:02d}"
+            cage_times = []
+            cage_values = []
 
-            times = []
-            values = []
-            skipped_rows_count = 0
-
-            # Iterate through each row of the split data
             for row_num, row_data in enumerate(data_lines_split):
-                # Check if the current row has enough columns for this cage
-                if len(row_data) > value_col_idx:
-                    t_str = row_data[time_col_idx].strip()
-                    v_str = row_data[value_col_idx].strip()
+                file_line_num = data_start_line_num + (1 if data_header_skipped else 0) + row_num +1 # Approx line num
 
-                    # Proceed only if both time and value strings are non-empty
-                    if t_str and v_str:
-                        # --- Datetime Parsing ---
-                        time_obj = None # Initialize
-                        try:
-                            # Try format 1: dd/mm/yyyy...
-                            time_obj = pd.to_datetime(t_str, format='%d/%m/%Y %I:%M:%S %p')
-                        except ValueError:
-                            try:
-                                # Try format 2: mm/dd/yyyy...
-                                time_obj = pd.to_datetime(t_str, format='%m/%d/%Y %I:%M:%S %p')
-                            except ValueError:
-                                # Both formats failed for this row
-                                skipped_rows_count += 1
-                                # Optional: Log the problematic row for debugging later
-                                # print(f"Skipping row {row_num+1} for cage {current_cage_label}: Cannot parse datetime '{t_str}'")
-                                continue # Skip to next row
+                if len(row_data) <= max(time_col_idx, value_col_idx):
+                    if len(parsing_errors) < max_errors_to_report:
+                        parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Row too short (found {len(row_data)} cols, need >{max(time_col_idx, value_col_idx)}).")
+                    continue # Skip short rows for this cage
 
-                        # --- Value Parsing ---
-                        try:
-                            value_float = float(v_str)
-                            # Append successfully parsed data
-                            times.append(time_obj)
-                            values.append(value_float)
-                        except ValueError:
-                            # Value is not a valid float
-                            skipped_rows_count += 1
-                            # Optional: Log the problematic row
-                            # print(f"Skipping row {row_num+1} for cage {current_cage_label}: Cannot parse value '{v_str}'")
-                            continue # Skip to next row
-                    # else: Skip row if t_str or v_str is empty
+                t_str = row_data[time_col_idx].strip()
+                v_str = row_data[value_col_idx].strip()
 
-            # After processing all rows for this cage
-            if times: # Only create DataFrame if data was found
-                if skipped_rows_count > 0:
-                    # Inform user about skipped rows for this specific cage
-                    st.caption(f"ℹ️ For {current_cage_label}, {skipped_rows_count} data points were skipped due to parsing errors (time or value format).")
+                if not t_str or not v_str: # Skip if time or value is empty string
+                    # Optionally log this type of skipping if needed
+                    # if len(parsing_errors) < max_errors_to_report:
+                    #     parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Empty time ('{t_str}') or value ('{v_str}'). Skipping.")
+                    continue
 
-                cage_df = pd.DataFrame({
-                    'timestamp': times,
-                    'value': values,
-                    'cage': current_cage_label # Use the standard label
-                })
-                all_data.append(cage_df)
-            elif not times and skipped_rows_count > 0:
-                # If no data was appended BUT rows were skipped, it means all rows had errors
-                st.warning(f"⚠️ No valid data points could be parsed for {current_cage_label}. All {skipped_rows_count} rows encountered parsing errors.")
-            # else: No data and no skipped rows likely means the columns were empty or file truncated.
+                # Robust Datetime Parsing
+                time_obj = None
+                try:
+                    time_obj = pd.to_datetime(t_str, format='%d/%m/%Y %I:%M:%S %p')
+                except ValueError:
+                    try:
+                        time_obj = pd.to_datetime(t_str, format='%m/%d/%Y %I:%M:%S %p')
+                    except ValueError:
+                        if len(parsing_errors) < max_errors_to_report:
+                            parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Bad datetime format '{t_str}'")
+                        continue # Skip row if datetime fails
 
-        # --- Final Checks and Concatenation ---
-        if not all_data:
-            st.error("Error: Failed to extract valid data for any cages after processing.")
+                # Robust Value Parsing
+                try:
+                    value_float = float(v_str)
+                    cage_times.append(time_obj)
+                    cage_values.append(value_float)
+                except ValueError:
+                    if len(parsing_errors) < max_errors_to_report:
+                        parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Bad numeric value '{v_str}'")
+                    continue # Skip row if value fails
+
+            # Create DataFrame for this cage IF valid data was found
+            if cage_times:
+                st.write(f"--- Debug: Parsed {len(cage_times)} valid points for {current_cage_label}. ---") # Temp debug
+                cage_df = pd.DataFrame({'timestamp': cage_times, 'value': cage_values, 'cage': current_cage_label})
+                all_data_cages.append(cage_df)
+            else:
+                 st.write(f"--- Debug: No valid data points parsed for {current_cage_label}. ---") # Temp debug
+
+
+        # --- Section 4: Report Parsing Errors ---
+        if parsing_errors:
+            num_total_errors = len(parsing_errors) # Get total count before limiting message
+            with st.expander(f"⚠️ Found {num_total_errors} data parsing issue(s). Click to see details.", expanded=False):
+                st.warning(f"Showing first {max_errors_to_report} potential issues found during data reading:")
+                error_report = "```\n" + "\n".join(parsing_errors[:max_errors_to_report]) + "\n```"
+                st.markdown(error_report)
+                # Estimate total points attempted to parse
+                total_points_attempted = len(data_lines_raw) * num_cages_detected
+                if total_points_attempted > 0 and num_total_errors / total_points_attempted > 0.1: # If > 10% error rate
+                    st.warning("**High error rate detected.** This may indicate a significant problem with the file format or structure. Please review the errors and your input file carefully.")
+
+        # --- Section 5: Concatenate and Validate Raw Data ---
+        if not all_data_cages:
+            st.error("❌ Critical Error: Failed to extract any valid numerical data points from the file after processing all cages. Cannot continue analysis.")
             return None, None, None
 
-      
-        # Combine DataFrames from all cages
-        df_processed = pd.concat(all_data, ignore_index=True)
-
-        # Ensure data is sorted by timestamp for time-based operations
+        df_processed = pd.concat(all_data_cages, ignore_index=True)
         df_processed.sort_values(by='timestamp', inplace=True)
-        df_processed.reset_index(drop=True, inplace=True) # Reset index after sort
+        df_processed.reset_index(drop=True, inplace=True)
+        st.write(f"--- Debug: Concatenated data. Shape: {df_processed.shape} ---") # Temp debug
 
-        # --- Step 3: Filter Data Based on Selected Time Window ---
-        # Use a more descriptive variable name for the filtered data
-        df_analysis_window = None # Initialize
-
-        # Get the user's choice (assuming 'time_window' is passed correctly or accessible)
-        selected_window = time_window # Use local variable for clarity
+        # --- Section 6: Filter by Time Window ---
+        st.write(f"--- Debug: Applying Time Filter: {st.session_state.get('time_window_radio', 'N/A')} ---") # Temp debug
+        df_analysis_window = None
+        selected_window = st.session_state.get('time_window_radio', "Entire Dataset") # Read from session state
 
         if selected_window == "Entire Dataset":
             df_analysis_window = df_processed.copy()
-            st.caption("ℹ️ Analyzing the entire dataset.") # Provide feedback
+            st.caption("ℹ️ Analyzing the entire dataset.")
         else:
-            # --- Calculate required duration and check data availability ---
             if selected_window == "Custom Range":
-                # Ensure custom days input is available and valid
-                custom_days_val = st.session_state.get("custom_days_input")
+                custom_days_val = st.session_state.get("custom_days_input") # Read custom days
                 if isinstance(custom_days_val, (int, float)) and custom_days_val >= 1:
-                     days_to_analyze = int(custom_days_val)
+                    days_to_analyze = int(custom_days_val)
                 else:
-                     st.warning(f"Invalid custom days value ({custom_days_val}). Defaulting to 5 days.", icon="⚠️")
-                     days_to_analyze = 5 # Fallback default
+                    st.warning(f"Invalid custom days value ({custom_days_val}). Defaulting to 5 days.", icon="⚠️")
+                    days_to_analyze = 5
             else:
-                # Dictionary lookup for standard ranges
                 days_to_analyze = {
                     "Last 24 Hours": 1, "Last 48 Hours": 2, "Last 72 Hours": 3,
                     "Last 7 Days": 7, "Last 14 Days": 14
-                }.get(selected_window) # No default needed here, should always match UI options
+                }.get(selected_window)
 
-            if days_to_analyze is None: # Should not happen if UI options match dict keys
+            if days_to_analyze is None:
                 st.error(f"Internal Error: Unrecognized time window '{selected_window}'.")
                 return None, None, None
 
@@ -1537,416 +1622,240 @@ def process_clams_data(file, parameter_type):
             data_end_time = df_processed['timestamp'].max()
             available_duration = data_end_time - data_start_time
 
-            if available_duration < required_duration:
-                st.error(f"Insufficient data for '{selected_window}' analysis ({days_to_analyze} days). "
-                         f"File contains only ~{available_duration.total_seconds() / 3600:.1f} hours "
-                         f"(from {data_start_time.strftime('%Y-%m-%d %H:%M')} to {data_end_time.strftime('%Y-%m-%d %H:%M')}).")
-                return None, None, None # Stop processing
+            # Allow small tolerance (e.g., 1 hour)
+            if available_duration < (required_duration - pd.Timedelta(hours=1)):
+                st.error(f"Insufficient data for '{selected_window}' ({days_to_analyze} days required). "
+                         f"File contains only ~{available_duration.total_seconds() / 3600:.1f} hours. "
+                         "Choose a shorter window or 'Entire Dataset'.")
+                return None, None, None
 
-            # --- Perform filtering ---
-            # Calculate the start time for the *filter* based on the end of the data
             filter_start_time = data_end_time - required_duration
-            # Ensure filter_start_time is not earlier than the actual data start
             filter_start_time = max(filter_start_time, data_start_time)
-
-            # Apply the filter using .loc for clarity and efficiency
             df_analysis_window = df_processed.loc[
                 (df_processed['timestamp'] >= filter_start_time) &
                 (df_processed['timestamp'] <= data_end_time)
-            ].copy() # Create a copy to avoid SettingWithCopyWarning
+            ].copy() # Use .loc and .copy()
 
-            # Provide feedback on the time range actually used
-            actual_start_used = df_analysis_window['timestamp'].min()
-            actual_end_used = df_analysis_window['timestamp'].max()
-            st.caption(f"ℹ️ Analyzing data from {actual_start_used.strftime('%Y-%m-%d %H:%M')} to {actual_end_used.strftime('%Y-%m-%d %H:%M')} ({selected_window}).")
+            if df_analysis_window.empty:
+                 st.error(f"❌ Error: No data remains after applying the '{selected_window}' time filter. Check data distribution within the file.")
+                 return None, None, None
 
+            actual_start = df_analysis_window['timestamp'].min()
+            actual_end = df_analysis_window['timestamp'].max()
+            st.caption(f"ℹ️ Analysis Time Window: {actual_start.strftime('%Y-%m-%d %H:%M')} to {actual_end.strftime('%Y-%m-%d %H:%M')} ({selected_window}).")
 
-        # Check if filtering resulted in an empty DataFrame
-        if df_analysis_window is None or df_analysis_window.empty:
-             st.error(f"Error: No data remaining after applying the '{selected_window}' time filter.")
-             return None, None, None
+        st.write(f"--- Debug: Data after time filter. Shape: {df_analysis_window.shape} ---") # Temp debug
 
-        # --- Step 4: Apply Lean Mass Adjustment (if applicable) ---
-        df_analysis_window_final = df_analysis_window.copy() # Work on a copy for adjustment
-        adjustment_applied_successfully = False # Flag to track success
-        lean_mass_adjustment_info = [] # To collect messages
-
+        # --- Section 7: Apply Lean Mass Normalization (Conditional) ---
+        # This section reads directly from session_state as before.
+        # Refactoring this state interaction is planned for Phase 3.
+        df_final_for_calc = df_analysis_window.copy() # Start with filtered data
         apply_adjustment_enabled = (
             parameter_type in ["VO2", "VCO2", "HEAT"] and
             st.session_state.get("apply_lean_mass", False)
         )
-
-        # Add temporary print here for debugging
-        print(f"--- Inside process_clams_data ---")
-        print(f"Parameter: {parameter_type}")
-        print(f"Apply Lean Mass checkbox state (apply_lean_mass): {st.session_state.get('apply_lean_mass', 'Not Set')}")
-        print(f"Sidebar reference mass state (reference_lean_mass_sidebar_val): {st.session_state.get('reference_lean_mass_sidebar_val', 'Not Set')}")
-        print(f"Individual lean mass data (lean_mass_data): {st.session_state.get('lean_mass_data', 'Not Set')}")
+        st.write(f"--- Debug: Lean Mass Adjust Enabled? {apply_adjustment_enabled} ---") # Temp debug
 
         if apply_adjustment_enabled:
-            print("--> Lean mass adjustment is ENABLED based on parameter and checkbox state.") # Debug
-            # --- Explicitly check for required session state variables ---
+            st.write(f"--- Debug: Applying Lean Mass Adj. Ref Mass: {st.session_state.get('reference_lean_mass_sidebar_val', 'N/A')} ---") # Temp debug
             lean_mass_data = st.session_state.get('lean_mass_data')
-            # --- FIX: Use the CORRECT key for the reference mass value ---
-            reference_mass_val = st.session_state.get('reference_lean_mass_sidebar_val') # Use the specific key
+            reference_mass_val = st.session_state.get('reference_lean_mass_sidebar_val')
 
-            # --- Detailed Check and Warning ---
-            proceed_with_adjustment = True # Assume we can proceed
+            proceed_with_adjustment = True
             warning_messages = []
             if not isinstance(lean_mass_data, dict) or not lean_mass_data:
-                 warning_messages.append("Individual animal lean mass data has not been entered/saved yet (check Overview tab).")
+                 warning_messages.append("Individual lean masses not entered/saved.")
                  proceed_with_adjustment = False
-            # Check if the value is None OR if it's not a valid number (although number_input usually prevents this)
             if reference_mass_val is None or not isinstance(reference_mass_val, (int, float)) or reference_mass_val <= 0:
-                 warning_messages.append(f"Reference lean mass value is missing or invalid ({reference_mass_val}). Set it in the sidebar.")
+                 warning_messages.append(f"Reference lean mass missing or invalid.")
                  proceed_with_adjustment = False
 
             if not proceed_with_adjustment:
-                 # Combine warnings if multiple issues exist
-                 full_warning = "Lean mass adjustment enabled, but cannot proceed: " + " | ".join(warning_messages) + " Skipping adjustment."
-                 st.warning(full_warning, icon="⚠️")
-                 print(f"--> Skipping adjustment due to: {full_warning}") # Debug
+                 st.warning(f"⚠️ Lean mass adjustment enabled, but cannot proceed: {' | '.join(warning_messages)}. Skipping adjustment.", icon="⚖️")
             else:
-                print(f"--> Proceeding with adjustment. Reference Mass: {reference_mass_val}, Individual Masses Found: {len(lean_mass_data)} entries.") # Debug
-                # --- Data seems available, attempt adjustment ---
-                reference_mass = reference_mass_val # Use the retrieved value
-
-                # Store original values if not already present and we are *actually* applying adjustment
-                if 'original_value' not in df_analysis_window_final.columns:
-                     df_analysis_window_final['original_value'] = df_analysis_window_final['value'].copy()
-                     print(f"--> Created 'original_value' column.") # Debug
-                else:
-                    # If adjustment was applied before, ensure 'value' starts from 'original_value'
-                    # This handles toggling the checkbox on/off correctly.
-                    df_analysis_window_final['value'] = df_analysis_window_final['original_value']
-                    print(f"--> Reset 'value' column from 'original_value' before reapplying adjustment.") # Debug
-
+                reference_mass = reference_mass_val
+                if 'original_value' not in df_final_for_calc.columns:
+                    df_final_for_calc['original_value'] = df_final_for_calc['value'].copy()
+                else: # Reset value from original if re-applying
+                    df_final_for_calc['value'] = df_final_for_calc['original_value']
 
                 adjusted_cages_count = 0
                 skipped_cages_invalid_mass = set()
-                cages_in_window = set(df_analysis_window_final['cage'].unique())
-                provided_cages_mass = set(lean_mass_data.keys())
+                cages_in_window = set(df_final_for_calc['cage'].unique())
 
                 for cage_label in cages_in_window:
-                     if cage_label in lean_mass_data:
-                         lean_mass = lean_mass_data[cage_label]
-                         # Check if lean_mass is valid number > 0
-                         if isinstance(lean_mass, (int, float)) and lean_mass > 0:
-                              mask = (df_analysis_window_final['cage'] == cage_label)
-                              adjustment_factor = reference_mass / lean_mass
-                              # Apply adjustment based on ORIGINAL value
-                              df_analysis_window_final.loc[mask, 'value'] = df_analysis_window_final.loc[mask, 'original_value'] * adjustment_factor
-                              adjusted_cages_count += 1
-                              # Debug print for one cage
-                              if adjusted_cages_count == 1:
-                                   print(f"--> Adjusting {cage_label}: Indiv LM={lean_mass}, Ref LM={reference_mass}, Factor={adjustment_factor:.3f}")
-                                   # Print sample original vs adjusted values
-                                   sample_orig = df_analysis_window_final.loc[mask, 'original_value'].iloc[0]
-                                   sample_adj = df_analysis_window_final.loc[mask, 'value'].iloc[0]
-                                   print(f"    Sample: Original Value={sample_orig:.2f} -> Adjusted Value={sample_adj:.2f}")
-                         else:
-                              skipped_cages_invalid_mass.add(cage_label)
-                              print(f"--> Skipping {cage_label}: Invalid lean mass provided ({lean_mass}).") # Debug
-                              # If skipped, ensure the 'value' remains the 'original_value' for this cage
-                              mask = (df_analysis_window_final['cage'] == cage_label)
-                              if 'original_value' in df_analysis_window_final.columns:
-                                  df_analysis_window_final.loc[mask, 'value'] = df_analysis_window_final.loc[mask, 'original_value']
-                     else:
-                         # Cage exists in data but no lean mass was provided. Value should remain original.
-                         mask = (df_analysis_window_final['cage'] == cage_label)
-                         if 'original_value' in df_analysis_window_final.columns:
-                             df_analysis_window_final.loc[mask, 'value'] = df_analysis_window_final.loc[mask, 'original_value']
+                    if cage_label in lean_mass_data:
+                        lean_mass = lean_mass_data[cage_label]
+                        if isinstance(lean_mass, (int, float)) and lean_mass > 0:
+                            mask = (df_final_for_calc['cage'] == cage_label)
+                            adjustment_factor = reference_mass / lean_mass
+                            df_final_for_calc.loc[mask, 'value'] = df_final_for_calc.loc[mask, 'original_value'] * adjustment_factor
+                            adjusted_cages_count += 1
+                        else:
+                            skipped_cages_invalid_mass.add(cage_label)
+                            # Ensure value remains original if skipped due to invalid mass
+                            if 'original_value' in df_final_for_calc.columns:
+                                 mask = (df_final_for_calc['cage'] == cage_label)
+                                 df_final_for_calc.loc[mask, 'value'] = df_final_for_calc.loc[mask, 'original_value']
+
+                    else: # Cage in data, but no mass provided
+                         if 'original_value' in df_final_for_calc.columns:
+                                 mask = (df_final_for_calc['cage'] == cage_label)
+                                 df_final_for_calc.loc[mask, 'value'] = df_final_for_calc.loc[mask, 'original_value']
 
 
-                # --- Report Adjustment Status ---
-                # Use st.info/success/warning for user feedback
+                # Report status
                 if adjusted_cages_count > 0:
-                     info_msg = f"✅ Lean mass normalization applied to {adjusted_cages_count} cage(s) using reference mass: {reference_mass:.1f}g."
-                     st.info(info_msg, icon="⚖️") # Use info instead of success for less visual noise
-                     lean_mass_adjustment_info.append(info_msg)
-                     print(f"--> Adjustment applied to {adjusted_cages_count} cages.") # Debug
-                     adjustment_applied_successfully = True # Set flag
+                     st.info(f"⚖️ Lean mass normalization applied to {adjusted_cages_count} cage(s) using reference mass: {reference_mass:.1f}g.", icon="✅")
                 elif proceed_with_adjustment:
-                     # If we intended to adjust but didn't adjust any cages
-                     info_msg = "Lean mass adjustment was enabled and data was present, but no cages were actually adjusted (check provided masses and cage IDs match data)."
-                     st.warning(info_msg, icon="❓")
-                     lean_mass_adjustment_info.append(info_msg)
-                     print(f"--> Adjustment enabled but no cages adjusted.") # Debug
-
+                     st.warning("❓ Lean mass adjustment enabled, data present, but no cages adjusted (check cage IDs/masses).", icon="❓")
                 if skipped_cages_invalid_mass:
-                     info_msg = f"⚠️ Adjustment skipped for cage(s) {skipped_cages_invalid_mass} due to invalid/zero mass value(s) provided."
-                     st.warning(info_msg, icon="❌")
-                     lean_mass_adjustment_info.append(info_msg)
+                     st.warning(f"❌ Adjustment skipped for cage(s) {skipped_cages_invalid_mass} due to invalid/zero mass value(s).", icon="❌")
+                # ... (optional: report on cages with mass provided but not in data) ...
+        else: # Adjustment not enabled
+            if 'original_value' in df_final_for_calc.columns: # Reset if previously adjusted
+                df_final_for_calc['value'] = df_final_for_calc['original_value']
+                st.write("--- Debug: Lean mass disabled, reset 'value' from 'original_value'. ---") # Temp debug
 
-                cages_mass_not_in_window = provided_cages_mass - cages_in_window
-                if cages_mass_not_in_window:
-                     info_msg = f"ℹ️ Lean mass was provided for cages {cages_mass_not_in_window}, but these cages were not found in the '{selected_window}' data."
-                     st.caption(info_msg) # Caption is less intrusive
-                     lean_mass_adjustment_info.append(info_msg)
 
-                # Store summary message in session state? Maybe not necessary unless needed elsewhere.
-                # st.session_state['lean_mass_status_message'] = "\n".join(lean_mass_adjustment_info)
+        st.write(f"--- Debug: Data after potential lean mass adj. Shape: {df_final_for_calc.shape} ---") # Temp debug
+        st.write(df_final_for_calc[['timestamp', 'cage', 'value']].head()) # Debug head
 
-        else: # Adjustment not enabled (either wrong param or checkbox off)
-             print(f"--> Lean mass adjustment is DISABLED.") # Debug
-             # If adjustment is disabled, ENSURE we are using the original values
-             # This handles the case where it was previously enabled, then disabled.
-             if 'original_value' in df_analysis_window_final.columns:
-                 df_analysis_window_final['value'] = df_analysis_window_final['original_value']
-                 print("--> Reset 'value' to 'original_value' as adjustment is now disabled.") # Debug
-             # Optionally remove the original_value column if adjustment is off? Maybe keep it for consistency.
+        # --- Section 8: Add Light/Dark Info ---
+        df_final_for_calc['hour'] = df_final_for_calc['timestamp'].dt.hour
+        light_start = st.session_state.get('light_start', 7) # Read from session state
+        light_end = st.session_state.get('light_end', 19)   # Read from session state
+        df_final_for_calc['is_light'] = (df_final_for_calc['hour'] >= light_start) & (df_final_for_calc['hour'] < light_end)
 
-        # --- Step 5: Add Light/Dark Cycle Information ---
-        # Apply to the (potentially) adjusted DataFrame: df_analysis_window_final
-        df_analysis_window_final['hour'] = df_analysis_window_final['timestamp'].dt.hour
-        light_start = st.session_state.get('light_start', 7)
-        light_end = st.session_state.get('light_end', 19)
-        df_analysis_window_final['is_light'] = (df_analysis_window_final['hour'] >= light_start) & (df_analysis_window_final['hour'] < light_end)
+        # --- Section 9 & 10: Calculate Summary & Hourly Metrics ---
+        # The core calculation logic remains similar to your original code,
+        # but now operates on the validated and potentially normalized 'df_final_for_calc'.
+        st.write(f"--- Debug: Calculating metrics for Param: {parameter_type} ---") # Temp debug
+        results = None
+        hourly_results = None
 
-        # RENAME df_analysis_window_final back to df_24h for compatibility
-        # TODO: Refactor subsequent code
-        df_24h = df_analysis_window_final
-        # Add a final debug print before calculations
-        print("--- Dataframe head BEFORE final calculations (value column should be adjusted if applicable) ---")
-        print(df_24h[['timestamp', 'cage', 'value', 'original_value' if 'original_value' in df_24h.columns else 'value']].head())
-        # The rest of the function now operates on the correctly filtered and potentially adjusted data... (logic optimization)
+        # Using df_final_for_calc for all calculations now
+        calc_df = df_final_for_calc
 
-        
-        # Calculate results based on parameter type
-        if parameter_type in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]: # UPDATED list
-            # --- Activity Parameter Calculations ---
-            results = df_24h.groupby(['cage', 'is_light'])['value'].agg(
-                # Use underscores temporarily for valid names before renaming
-                Average_Activity='mean',
-                Peak_Activity='max',
-                Total_Counts='sum'
-            ).unstack(fill_value=0) # fill_value=0 makes sense for counts
-
-            # Flatten MultiIndex columns and rename descriptively
-            new_columns = {}
-            if results.columns.nlevels > 1: # Check if unstack created MultiIndex
+        # Activity Parameters
+        if parameter_type in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]:
+            results = calc_df.groupby(['cage', 'is_light'])['value'].agg(
+                Average_Activity='mean', Peak_Activity='max', Total_Counts='sum'
+            ).unstack(fill_value=0)
+            if results.columns.nlevels > 1:
+                new_columns = {}
                 for metric, is_light in results.columns:
                     cycle_name = "Light" if is_light else "Dark"
-                    # Directly create the final desired column name with spaces
-                    # Replace underscores in the metric name itself before joining
                     metric_name_cleaned = metric.replace("_", " ")
-                    new_columns[(metric, is_light)] = f"{cycle_name} {metric_name_cleaned}" # Combine with cycle name using a space
-                results.columns = list(new_columns.values()) # Assign the list of corrected names directly
-                # Removed the redundant .rename() step here
-            else:
-                # Handle cases where unstack might not create MultiIndex (e.g., only one cycle present)
-                # This part might need refinement based on edge case testing
-                st.warning("Activity data structure unexpected after grouping. Columns might be inaccurate.")
-
-
-            # Calculate 24h aggregates separately
-            results_24h_avg = df_24h.groupby('cage')['value'].mean()
-            results_24h_sum = df_24h.groupby('cage')['value'].sum()
-            results['24h Average'] = results_24h_avg
-            results['24h Total Counts'] = results_24h_sum
-
-            # Fill NaNs that might arise from merging or if a cage had no data
+                    new_columns[(metric, is_light)] = f"{cycle_name} {metric_name_cleaned}"
+                results.columns = list(new_columns.values())
+            results['24h Average'] = calc_df.groupby('cage')['value'].mean()
+            results['24h Total Counts'] = calc_df.groupby('cage')['value'].sum()
             results = results.fillna(0)
-            # --- TEMPORARY DEBUGGING ---
-            if parameter_type in ["YTOT", "YAMB", "ZTOT", "ZAMB"]:
-                st.warning(f"DEBUG: Final columns for {parameter_type}: {results.columns.tolist()}")
-                st.dataframe(results.head()) # Show first few rows for context
-            # --- END DEBUGGING ---
 
-        elif parameter_type == "FEED": # Assumes FEED1 ACC
-
-            results_list = [] # To store results for each cage
-            processed_cages = df_24h['cage'].unique()
-
-            # Ensure data is sorted globally by cage and time first
-            df_24h_sorted = df_24h.sort_values(by=['cage', 'timestamp'])
-
+        # Feed Parameter (Accumulated)
+        elif parameter_type == "FEED":
+            results_list = []
+            processed_cages = calc_df['cage'].unique()
+            calc_df_sorted = calc_df.sort_values(by=['cage', 'timestamp'])
             for cage in processed_cages:
-                cage_data = df_24h_sorted[df_24h_sorted['cage'] == cage]
-                cage_results = {"Cage": cage} # Start dict for this cage's results
-
-                # --- Calculate Total Intake (Period) ---
-                if len(cage_data) > 1:
-                    total_intake = cage_data['value'].iloc[-1] - cage_data['value'].iloc[0]
-                    cage_results['Total Intake (Period)'] = total_intake
-                else:
-                    cage_results['Total Intake (Period)'] = 0 # Or np.nan if preferred
-
-            # ... (inside the for cage in processed_cages: loop) ...
-
-                # --- Calculate Light Cycle Intake ---
+                cage_data = calc_df_sorted[calc_df_sorted['cage'] == cage]
+                cage_results = {"Cage": cage}
+                if len(cage_data) > 1: cage_results['Total Intake (Period)'] = cage_data['value'].iloc[-1] - cage_data['value'].iloc[0]
+                else: cage_results['Total Intake (Period)'] = 0
                 light_data = cage_data[cage_data['is_light']]
-                if len(light_data) > 1:
-                    light_intake = light_data['value'].iloc[-1] - light_data['value'].iloc[0]
-                    cage_results['Light Cycle Intake'] = light_intake
-                else:
-                    cage_results['Light Cycle Intake'] = 0
-
-                # --- Calculate Dark Cycle Intake ---
+                if len(light_data) > 1: cage_results['Light Cycle Intake'] = light_data['value'].iloc[-1] - light_data['value'].iloc[0]
+                else: cage_results['Light Cycle Intake'] = 0
                 dark_data = cage_data[~cage_data['is_light']]
-                if len(dark_data) > 1:
-                    dark_intake = dark_data['value'].iloc[-1] - dark_data['value'].iloc[0]
-                    cage_results['Dark Cycle Intake'] = dark_intake
-                else:
-                    cage_results['Dark Cycle Intake'] = 0
-
-                # Append this cage's results to our list
+                if len(dark_data) > 1: cage_results['Dark Cycle Intake'] = dark_data['value'].iloc[-1] - dark_data['value'].iloc[0]
+                else: cage_results['Dark Cycle Intake'] = 0
                 results_list.append(cage_results)
 
-            # --- Create Final DataFrame ---
             if results_list:
                 results = pd.DataFrame(results_list).set_index("Cage")
+                results = results.round(4)
+            else: # Handle case where no results could be generated
+                results = pd.DataFrame(columns=['Total Intake (Period)', 'Light Cycle Intake', 'Dark Cycle Intake'])
 
-                # Add Subject IDs (ensure subject_map uses the same cage format as results.index)
-                # Use .map() which is safer for potentially missing keys
-                results['Subject ID'] = results.index.map(subject_map)
 
-                # Reorder columns for clarity
-                cols_order = ['Subject ID', 'Total Intake (Period)', 'Light Cycle Intake', 'Dark Cycle Intake']
-                # Ensure columns exist before trying to reorder
-                results = results[[col for col in cols_order if col in results.columns]]
-
-                # Optional: Rounding
-                results = results.round(4) # Round intake values reasonably
-
-            else:
-                st.error("Failed to process FEED data for any cages.")
-                results = pd.DataFrame(columns=['Subject ID', 'Total Intake (Period)', 'Light Cycle Intake', 'Dark Cycle Intake']) # Empty frame with expected cols
-
-            # Note: No broad fillna(0) needed here, as we handled missing/single points explicitly
-            
+        # Accumulated Gas Parameters
         elif parameter_type in ["ACCCO2", "ACCO2"]:
-            # --- Accumulated Gas Calculations (Net Change) ---
-            # We need the first and last value for each cage within each cycle/period
-            # Sort data by timestamp first to ensure 'first' and 'last' are correct
-            df_24h_sorted = df_24h.sort_values(by=['cage', 'timestamp'])
-
-            # Group by cage and light/dark cycle, get first and last value
-            cycle_bounds = df_24h_sorted.groupby(['cage', 'is_light'])['value'].agg(['first', 'last'])
-
-            # Calculate the difference (last - first) for each cycle
-            # Need to handle cases where a cage might only have data in one cycle (unstack will create NaN)
+            calc_df_sorted = calc_df.sort_values(by=['cage', 'timestamp'])
+            cycle_bounds = calc_df_sorted.groupby(['cage', 'is_light'])['value'].agg(['first', 'last'])
             cycle_diff = (cycle_bounds['last'] - cycle_bounds['first']).unstack()
-
-            # Rename columns for clarity
-            cols_rename_acc = {}
-            if True in cycle_diff.columns: # True corresponds to Light cycle (is_light=True)
-                cols_rename_acc[True] = 'Light Net Accumulated'
-            if False in cycle_diff.columns: # False corresponds to Dark cycle
-                cols_rename_acc[False] = 'Dark Net Accumulated'
+            cols_rename_acc = {True: 'Light Net Accumulated', False: 'Dark Net Accumulated'}
             results = cycle_diff.rename(columns=cols_rename_acc)
-
-            # Calculate Total Net Accumulated for the entire period
-            total_bounds = df_24h_sorted.groupby('cage')['value'].agg(['first', 'last'])
+            total_bounds = calc_df_sorted.groupby('cage')['value'].agg(['first', 'last'])
             results['Total Net Accumulated (Period)'] = total_bounds['last'] - total_bounds['first']
+            results = results.fillna(0).round(4)
 
-            # Fill missing values (e.g., if a cycle had no data) with 0
-            results = results.fillna(0).round(4) # Round accumulated values nicely
-
+        # Default (Metabolic, Other Gases, Environmental - Averages)
         else:
-            # --- Default Calculations (Metabolic, Gas, Environmental - Averages) ---
-            results = df_24h.groupby(['cage', 'is_light'])['value'].mean().unstack()
-
-            # Define potential column names based on boolean index
-            dark_col_temp_name = False # column name after unstack if dark exists
-            light_col_temp_name = True # column name after unstack if light exists
-            final_dark_col = 'Dark Average'
-            final_light_col = 'Light Average'
-
-            # Rename columns conditionally if they exist
-            cols_to_rename = {}
-            if dark_col_temp_name in results.columns:
-                cols_to_rename[dark_col_temp_name] = final_dark_col
-            if light_col_temp_name in results.columns:
-                cols_to_rename[light_col_temp_name] = final_light_col
+            results = calc_df.groupby(['cage', 'is_light'])['value'].mean().unstack()
+            cols_to_rename = {False: 'Dark Average', True: 'Light Average'}
             results = results.rename(columns=cols_to_rename)
-
-            # --- Calculate TRUE Total Average ---
-            # This avoids issues if light/dark cycles have different numbers of readings.
-            overall_mean_per_cage = df_24h.groupby('cage')['value'].mean()
-            results['Total Average'] = overall_mean_per_cage
-            # --- End TRUE Total Average Calculation ---
-
-            # Apply rounding based on parameter type AFTER calculations
-            if parameter_type == "RER":
-                results = results.round(3)
-                # Also round the specific cycle averages if they exist
-                if final_dark_col in results.columns: results[final_dark_col] = results[final_dark_col].round(3)
-                if final_light_col in results.columns: results[final_light_col] = results[final_light_col].round(3)
-                if 'Total Average' in results.columns: results['Total Average'] = results['Total Average'].round(3)
-
-            else:
-                # Default rounding for other parameters (e.g., VO2, VCO2, HEAT)
-                results = results.round(2) # This rounds ALL numeric columns
-                # More specific to avoid rounding unrelated columns (if they exist...)
-                cols_to_round = [col for col in [final_dark_col, final_light_col, 'Total Average'] if col in results.columns]
-                if cols_to_round: # Check if list is not empty
-                     results[cols_to_round] = results[cols_to_round].round(2)
-                     
-            # --- Let NaNs persist --- (NEW)
-            # Do NOT fill NaNs with 0 for average-based parameters.
-            # NaN correctly represents missing data for a cycle or cage.
-            # results = results.fillna(0) # REMOVED THIS LINE
-            
-# --- Add Subject IDs to the main results table ---
-        # Use .map() for safer mapping based on the index (cage labels)
-        results['Subject ID'] = results.index.map(subject_map)
-        # Handle cases where a cage in results might not be in subject_map (should be rare now)
-        if results['Subject ID'].isnull().any():
-             missing_cages = results[results['Subject ID'].isnull()].index.tolist()
-             st.warning(f"Could not find Subject ID mapping for cages: {missing_cages}", icon="❓")
+            # Calculate TRUE Total Average directly from all points for the cage
+            results['Total Average'] = calc_df.groupby('cage')['value'].mean()
+            # Apply rounding based on parameter type
+            round_digits = 3 if parameter_type == "RER" else 2
+            cols_to_round = [col for col in ['Dark Average', 'Light Average', 'Total Average'] if col in results.columns]
+            if cols_to_round: results[cols_to_round] = results[cols_to_round].round(round_digits)
+            # Let NaNs persist for averages (do not fillna(0))
 
 
-        # --- Calculate Hourly Averages ---
-        # Use pivot_table on the filtered data (df_24h)
-        hourly_results = df_24h.pivot_table(
-            values='value',    # Values to aggregate
-            index='hour',      # Rows will be hours 0-23
-            columns='cage',    # Columns will be cage labels (CAGE 01, etc.)
-            aggfunc='mean'     # Aggregate function is mean
-        ) # Apply rounding later
-
-        # Ensure all 24 hours are present in the index, fill missing with NaN
-        all_hours = pd.Index(range(24), name='hour')
-        hourly_results = hourly_results.reindex(all_hours)
-
-        # --- Rename columns to Subject IDs ---
-        # Create a reverse map: cage_label -> subject_id (handle missing mappings)
-        cage_to_subject = {v: k for k, v in subject_map.items()} # Simple reverse map
-        # Apply renaming, falling back to cage label if subject ID is unknown
-        hourly_results.columns = [cage_to_subject.get(cage, cage) for cage in hourly_results.columns]
-
-        # --- Calculate Hourly Summary Statistics (Mean and Correct SEM) ---
-        # Calculate Mean across animals for each hour (axis=1), ignoring NaNs
-        hourly_results['Mean'] = hourly_results.mean(axis=1)
-
-        # Calculate N (count of non-NaN values) for each hour
-        hourly_n = hourly_results.drop(columns=['Mean'], errors='ignore').count(axis=1) # Count non-NaNs per row
-
-        # Calculate Standard Deviation for each hour, ignoring NaNs
-        hourly_std = hourly_results.drop(columns=['Mean'], errors='ignore').std(axis=1)
-
-        # Calculate SEM = StdDev / sqrt(N). Avoid division by zero or sqrt(0).
-        # Use np.where to handle N < 1 safely.
-        hourly_results['SEM'] = np.where(hourly_n > 0, hourly_std / np.sqrt(hourly_n), 0) # Assign 0 SEM if N=0
-
-        # --- Apply Rounding to Hourly Results ---
-        # Round based on parameter type AFTER all calculations
-        hourly_cols_to_round = hourly_results.columns # Get all columns including Mean/SEM
-        if parameter_type == "RER":
-            hourly_results[hourly_cols_to_round] = hourly_results[hourly_cols_to_round].round(3)
+        # Add Subject IDs to results table
+        if results is not None:
+            results['Subject ID'] = results.index.map(subject_map)
+            if results['Subject ID'].isnull().any():
+                missing_cages = results[results['Subject ID'].isnull()].index.tolist()
+                st.warning(f"❓ Could not find Subject ID mapping for cages: {missing_cages}", icon="❓")
         else:
-            hourly_results[hourly_cols_to_round] = hourly_results[hourly_cols_to_round].round(2)
+            # Handle case where results is None (e.g., failed FEED calculation)
+             st.error("❌ Error: Failed to generate the main summary results table.")
+             return None, None, None
 
-        # Return the main results, hourly results, and the filtered data window
-        return results, hourly_results, df_24h # df_24h is currently df_analysis_window
+        # Calculate Hourly Results
+        try:
+            hourly_results = calc_df.pivot_table(
+                values='value', index='hour', columns='cage', aggfunc='mean'
+            )
+            all_hours = pd.Index(range(24), name='hour')
+            hourly_results = hourly_results.reindex(all_hours) # Ensure 0-23 hours exist
 
-    # Keep the broad exception handler for unexpected issues
+            # Rename columns to Subject IDs if possible
+            # Use cage labels directly if subject_map is empty or fails
+            subject_id_map_for_hourly = {cage: subject_map.get(cage, cage) for cage in hourly_results.columns}
+            hourly_results = hourly_results.rename(columns=subject_id_map_for_hourly)
+
+            # Calculate Mean and SEM across animals for each hour
+            hourly_results['Mean'] = hourly_results.mean(axis=1)
+            hourly_n = hourly_results.drop(columns=['Mean'], errors='ignore').count(axis=1)
+            hourly_std = hourly_results.drop(columns=['Mean'], errors='ignore').std(axis=1)
+            hourly_results['SEM'] = np.where(hourly_n > 0, hourly_std / np.sqrt(hourly_n), 0)
+
+            # Apply Rounding
+            round_digits_hourly = 3 if parameter_type == "RER" else 2
+            hourly_results = hourly_results.round(round_digits_hourly)
+
+        except Exception as e_hourly:
+             st.error(f"❌ Error calculating hourly results: {e_hourly}")
+             hourly_results = None # Ensure it's None if calculation fails
+
+        # --- Section 11: Final Validation and Return ---
+        if results is None or hourly_results is None:
+            st.error("❌ Error: Failed to generate summary or hourly results tables.")
+            return None, None, None
+
+        st.write("--- Debug: Exiting process_clams_data Successfully ---") # Temp debug
+        # Return the calculated results and the final DataFrame used for calculations
+        return results, hourly_results, calc_df
+
+    # --- Main Exception Handler ---
     except Exception as e:
-        st.error(f"An unexpected error occurred during data processing: {e}")
-        # Optionally add more detailed logging here if needed
+        st.error(f"❌ An unexpected critical error occurred during data processing: {e}")
         import traceback
-        st.error(f"Traceback: {traceback.format_exc()}") # Show full traceback in error message
+        st.error("Traceback:")
+        st.code(traceback.format_exc())
         return None, None, None
     
 def assign_groups(cage_df, key_prefix=''):
@@ -3863,6 +3772,64 @@ if uploaded_file is not None:
 
                         # Fit the model using Ordinary Least Squares (OLS)
                         model = ols(formula, data=anova_input_df_clean).fit()
+                        
+                        st.markdown("---") # Add a separator before assumption checks
+                        st.markdown("##### Checking ANOVA Assumptions")
+                        anova_assumptions_ok = True # Flag to track overall status
+
+                        # 1. Normality of Residuals (using Shapiro-Wilk)
+                        residuals = model.resid
+                        is_normal, norm_p_val, _ = check_normality(residuals) # Call helper function
+
+                        if is_normal is None:
+                            st.caption("Normality check skipped (insufficient data for residuals).")
+                        elif is_normal:
+                            st.success(f"✅ Residuals appear normally distributed (Shapiro-Wilk p={norm_p_val:.3f}).")
+                        else:
+                            st.warning(f"⚠️ Residuals may not be normally distributed (Shapiro-Wilk p={norm_p_val:.3f}). ANOVA results might be less reliable, consider transformation or non-parametric alternatives if deviation is severe.")
+                            anova_assumptions_ok = False # Mark assumption as potentially violated
+
+                        # 2. Homogeneity of Variances (Levene's Test)
+                        #    We need to check variances across all the unique 'Group_Cycle' combinations.
+                        #    First, create the combined column if it doesn't exist on the clean data yet.
+                        if 'Group_Cycle' not in anova_input_df_clean.columns:
+                            # Check if required columns exist before creating combined factor
+                            if 'Group' in anova_input_df_clean.columns and 'Cycle' in anova_input_df_clean.columns:
+                                anova_input_df_clean['Group_Cycle'] = anova_input_df_clean['Group'] + "_" + anova_input_df_clean['Cycle']
+                            else:
+                                st.error("Cannot perform homogeneity check: 'Group' or 'Cycle' column missing in anova_input_df_clean.")
+                                is_homogeneous = None # Mark as unable to check
+                                homog_p_val = None
+
+                        # Proceed only if the combined column was created or already existed
+                        if 'Group_Cycle' in anova_input_df_clean.columns:
+                            # Prepare data for Levene's: list of arrays, one for each group/cycle combo
+                            groups_for_levene = [
+                                anova_input_df_clean['Mean Value'][anova_input_df_clean['Group_Cycle'] == gc].values
+                                for gc in anova_input_df_clean['Group_Cycle'].unique()
+                            ]
+                            # Filter out any groups with insufficient data for Levene's (needs >= 2 points)
+                            valid_groups_for_levene = [g for g in groups_for_levene if len(g) >= 2]
+
+                            if len(valid_groups_for_levene) < 2: # Levene needs at least 2 groups to compare
+                                st.caption("Homogeneity check skipped (less than 2 groups/conditions with sufficient data).")
+                                is_homogeneous = None # Mark as unable to check
+                                homog_p_val = None
+                            else:
+                                is_homogeneous, homog_p_val, _ = check_homogeneity(valid_groups_for_levene) # Call helper function
+
+                                if is_homogeneous is None:
+                                    st.caption("Homogeneity check failed or could not be performed.")
+                                elif is_homogeneous:
+                                    st.success(f"✅ Variances appear homogeneous across groups/cycles (Levene's p={homog_p_val:.3f}).")
+                                else:
+                                    st.warning(f"⚠️ Variances may not be homogeneous across groups/cycles (Levene's p={homog_p_val:.3f}). ANOVA results might be less reliable, especially with unbalanced group sizes.")
+                                    anova_assumptions_ok = False # Mark assumption as potentially violated
+                        else: # Group_Cycle column creation failed earlier
+                            is_homogeneous = None # Ensure it's marked as not checkable
+                            homog_p_val = None
+                            
+                        st.markdown("---") # Add separator after checks
 
                         # Get the ANOVA table
                         anova_table = sm.stats.anova_lm(model, typ=2) # Type 2 ANOVA is generally recommended
@@ -3923,7 +3890,11 @@ if uploaded_file is not None:
                         else:
                             interpretation_texts.append(f"❌ No Significant Main Effect of Cycle (p={cycle_p:.4f}): Overall, no significant difference detected between Light and Dark cycles.")
 
-                        st.info("\n".join(interpretation_texts)) # Keep this line
+                        if not anova_assumptions_ok:
+                            st.warning("**Note:** One or more ANOVA assumptions were potentially violated (see warnings above). Interpret the following results with caution.", icon="❗")
+                        else:
+                            st.success("**Note:** ANOVA assumptions appear to be met.")
+                        st.info("\n".join(interpretation_texts)) # Display the original interpretation texts
 
                         # --- Interaction Plot ---
                         st.markdown("##### Interaction Plot: Group vs. Cycle")
@@ -4191,6 +4162,38 @@ if uploaded_file is not None:
                                                 if len(group1_data) < 2 or len(group2_data) < 2:
                                                     st.warning("Need at least 2 data points per group for a t-test.")
                                                 else:
+                                                    st.markdown("---") # Separator
+                                                    st.markdown("##### Checking T-test Assumptions")
+                                                    ttest_assumptions_ok = True
+
+                                                    # Check normality for EACH group
+                                                    norm_results = {}
+                                                    for i, group_name in enumerate(groups_for_test.index):
+                                                        is_normal, p_val, _ = check_normality(groups_for_test.iloc[i])
+                                                        norm_results[group_name] = (is_normal, p_val)
+                                                        if is_normal is None:
+                                                            st.caption(f"Normality check skipped for {group_name} (N<3).")
+                                                        elif is_normal:
+                                                            st.caption(f"Data for {group_name} appears normal (p={p_val:.3f}).") # Use caption for success
+                                                        else:
+                                                            st.warning(f"⚠️ Data for {group_name} may not be normal (Shapiro-Wilk p={p_val:.3f}). T-test validity could be affected.")
+                                                            ttest_assumptions_ok = False
+
+                                                    # Check homogeneity (using the same Levene's test helper)
+                                                    is_homogeneous, homog_p_val, _ = check_homogeneity(groups_for_test.tolist()) # Pass list of group data arrays
+                                                    if is_homogeneous is None:
+                                                        st.caption(f"Homogeneity check skipped or failed.")
+                                                    elif is_homogeneous:
+                                                        st.caption(f"Variances appear homogeneous (Levene's p={homog_p_val:.3f}).") # Use caption for success
+                                                    else:
+                                                        st.warning(f"⚠️ Variances may not be homogeneous (Levene's p={homog_p_val:.3f}). Welch's t-test (used here) is robust to this.")
+                                                        # Note: We don't set ttest_assumptions_ok to False here because Welch's t-test handles it.
+
+                                                    # Display overall assumption status for T-test interpretation
+                                                    if not ttest_assumptions_ok:
+                                                        st.warning("**Note:** Normality assumption potentially violated. Interpret t-test results with caution.", icon="❗")
+                                                    st.markdown("---") # Separator
+                                                    
                                                     t_stat, p_val_ttest = stats.ttest_ind(group1_data, group2_data, equal_var=False) # Welch's t-test (doesn't assume equal variances)
                                                     
                                                     st.metric(
@@ -4207,6 +4210,38 @@ if uploaded_file is not None:
                                                 if any(len(group_data) < 2 for group_data in groups_for_test):
                                                     st.warning("Need at least 2 data points per group for ANOVA.")
                                                 else:
+                                                    st.markdown("---") # Separator
+                                                    st.markdown("##### Checking One-Way ANOVA Assumptions")
+                                                    oneway_assumptions_ok = True
+
+                                                    # Check normality for EACH group
+                                                    norm_results_oneway = {}
+                                                    for i, group_name in enumerate(groups_for_test.index):
+                                                        is_normal, p_val, _ = check_normality(groups_for_test.iloc[i])
+                                                        norm_results_oneway[group_name] = (is_normal, p_val)
+                                                        if is_normal is None:
+                                                            st.caption(f"Normality check skipped for {group_name} (N<3).")
+                                                        elif is_normal:
+                                                            st.caption(f"Data for {group_name} appears normal (p={p_val:.3f}).") # Caption for success
+                                                        else:
+                                                            st.warning(f"⚠️ Data for {group_name} may not be normal (Shapiro-Wilk p={p_val:.3f}). ANOVA validity could be affected.")
+                                                            oneway_assumptions_ok = False
+
+                                                    # Check homogeneity
+                                                    is_homogeneous_oneway, homog_p_val_oneway, _ = check_homogeneity(groups_for_test.tolist())
+                                                    if is_homogeneous_oneway is None:
+                                                        st.caption(f"Homogeneity check skipped or failed.")
+                                                    elif is_homogeneous_oneway:
+                                                        st.caption(f"Variances appear homogeneous (Levene's p={homog_p_val_oneway:.3f}).") # Caption for success
+                                                    else:
+                                                        st.warning(f"⚠️ Variances may not be homogeneous (Levene's p={homog_p_val_oneway:.3f}). ANOVA is somewhat robust, but consider alternatives if severe.")
+                                                        oneway_assumptions_ok = False # Violation of homogeneity is more problematic for ANOVA than Welch's t-test
+
+                                                    # Display overall assumption status for One-Way ANOVA interpretation
+                                                    if not oneway_assumptions_ok:
+                                                        st.warning("**Note:** One or more ANOVA assumptions potentially violated. Interpret results with caution.", icon="❗")
+                                                    st.markdown("---") # Separator
+                                                    
                                                     f_stat, p_val_anova = stats.f_oneway(*groups_for_test)
                                                     
                                                     st.metric(
