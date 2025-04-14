@@ -1405,458 +1405,774 @@ def extract_cage_info(file):
         try: file.seek(0) # Attempt rewind
         except: pass
         return {} # Return empty dict on critical error
+def _parse_clams_header(file_wrapper):
+    """Parses the header of a CLAMS file to find the data start and subject map."""
+    header_lines = []
+    subject_map = {}
+    current_cage_num_str = None
+    data_start_line_num = -1
+    line_count = 0
+    max_header_lines = 500 # Safety limit
 
-def process_clams_data(file, parameter_type):
-    """
-    Processes the uploaded CLAMS data file with improved robustness and error reporting.
+    for i, line in enumerate(file_wrapper):
+        line_count = i
+        line_strip = line.strip()
+        if not line_strip: continue
 
-    Steps:
-    1. Reads header and raw data lines separately.
-    2. Parses the header to extract cage-to-subject ID mapping.
-    3. Parses the data section row-by-row, cage-by-cage, with robust error handling
-       for datetime and numeric values, collecting parsing errors.
-    4. Reports a summary of parsing errors encountered.
-    5. Concatenates valid data, validates its existence.
-    6. Filters the data based on the selected time window from st.session_state.
-    7. Applies lean mass normalization if enabled and applicable (uses st.session_state).
-    8. Adds light/dark cycle information based on st.session_state settings.
-    9. Calculates summary metrics (light/dark/total) based on parameter type.
-    10. Calculates hourly metrics (0-23 profile).
-    11. Returns summary results, hourly results, and the final processed DataFrame.
+        header_lines.append(line_strip)
 
-    Args:
-        file (UploadedFile): The file object uploaded by the user.
-        parameter_type (str): The parameter selected by the user (e.g., "VO2").
+        if ':DATA' in line_strip:
+            data_start_line_num = i + 1 # 1-based line number where data starts
+            break # Stop reading header
 
-    Returns:
-        tuple: (results_df, hourly_results_df, processed_data_df) or (None, None, None) if errors occur.
-    """
-    st.write("--- Debug: Entering process_clams_data ---") # Temporary debug
+        # Simplified subject mapping parsing (assumes structure from previous code)
+        if 'Group/Cage' in line_strip:
+            try: current_cage_num_str = line_strip.split(',')[-1].strip().lstrip('0')
+            except IndexError: current_cage_num_str = None
+        elif 'Subject ID' in line_strip and current_cage_num_str is not None:
+            try:
+                subject_id = line_strip.split(',')[-1].strip()
+                cage_int = int(current_cage_num_str)
+                if cage_int >= 101: # Basic CLAMS format check
+                    cage_label = f"CAGE {cage_int - 100:02d}"
+                    subject_map[cage_label] = subject_id
+            except (IndexError, ValueError): pass # Ignore parsing errors here
+            current_cage_num_str = None # Reset for next pair
+
+        if line_count >= max_header_lines:
+            st.warning(f"Stopped reading header after {max_header_lines} lines; ':DATA' marker may be missing or very late.")
+            break
+
+    if data_start_line_num == -1:
+        st.error("❌ Critical Error: ':DATA' marker not found in the file header. Cannot process.")
+        return None, None, None, None # Indicate failure
+
+    # Check if Subject IDs were found
+    if not subject_map:
+        st.caption("ℹ️ No Subject ID mappings found in file header.")
+
+    # Determine if the data section header needs skipping ('INTERVAL' or '===')
+    # Peek at the line immediately after ':DATA' if possible
     try:
-        # --- Section 1: Read Header & Data Lines ---
-        header_lines = []
-        data_lines_raw = []
-        in_data_section = False
+        # Re-read lines briefly to find the line(s) after :DATA
+        file_wrapper.seek(0) # Go back to start
+        post_data_lines = []
+        temp_line_num = 0
+        start_collecting = False
+        for line in file_wrapper:
+            temp_line_num += 1
+            if temp_line_num == data_start_line_num:
+                start_collecting = True
+                continue # Skip the :DATA line itself
+            if start_collecting:
+                line_strip = line.strip()
+                if line_strip: # Only consider non-empty lines
+                    post_data_lines.append(line_strip)
+                if len(post_data_lines) >= 2: # Check first two non-empty lines after :DATA
+                    break
+        # Determine if skip is needed based on first actual data-like line
         data_header_skipped = False
-        header_line_count = 0
-        data_start_line_num = -1 # Track where ':DATA' was found
+        if post_data_lines:
+             first_data_section_line = post_data_lines[0]
+             if first_data_section_line.startswith('===') or first_data_section_line.startswith('INTERVAL'):
+                  data_header_skipped = True
+             # Check second line too if first was skipped separator
+             if data_header_skipped and len(post_data_lines) > 1:
+                  second_data_section_line = post_data_lines[1]
+                  if second_data_section_line.startswith('INTERVAL'):
+                       # If both '===' and 'INTERVAL' are present, still just one header skip logic needed
+                       pass # Already flagged to skip
 
-        file.seek(0)
-        wrapper = io.TextIOWrapper(file, encoding='utf-8', errors='ignore')
+    except Exception as e:
+         st.warning(f"Could not reliably determine data header presence: {e}. Assuming no header skip.")
+         data_header_skipped = False
 
-        for i, line in enumerate(wrapper):
-            line_strip = line.strip()
-            if not line_strip: continue # Skip empty lines
 
-            if not in_data_section:
-                header_lines.append(line_strip)
-                header_line_count += 1
-                if ':DATA' in line_strip:
-                    in_data_section = True
-                    data_start_line_num = i + 1 # 1-based line number
-                    continue # Don't add :DATA line itself
+    return header_lines, subject_map, data_start_line_num, data_header_skipped
 
-            elif in_data_section:
-                # Skip separator '===' and header 'INTERVAL...'
-                if line_strip.startswith('===') or line_strip.startswith('INTERVAL'):
-                    if not data_header_skipped: data_header_skipped = True
-                    continue
-                if line_strip: # Only add non-empty lines after skipping header
-                    data_lines_raw.append(line) # Keep original line formatting
+def _parse_clams_data_section(file_wrapper, data_start_line_num, data_header_skipped):
+    """Parses the data section of the CLAMS file robustly."""
+    all_data_cages = []
+    parsing_errors = []
+    max_errors_to_report = 15
+    data_lines_read = 0
+    num_cages_detected = 0
 
-        wrapper.detach() # Release wrapper
+    file_wrapper.seek(0) # Rewind to start reading from data section
+    line_num = 0
+    first_data_line_content = None
 
-        if data_start_line_num == -1:
-             st.error("❌ Critical Error: ':DATA' marker not found in the file. Cannot process.")
-             return None, None, None
+    # Skip header lines + :DATA line
+    for _ in range(data_start_line_num):
+        file_wrapper.readline()
+        line_num += 1
 
-        # --- Section 2: Parse Header (Subject Mapping) ---
-        subject_map = {}
-        current_cage_num_str = None
-        for line in header_lines:
-            # Simplified parsing (assumes format based on previous code)
-            if 'Group/Cage' in line:
-                try: current_cage_num_str = line.split(',')[-1].strip().lstrip('0')
-                except IndexError: current_cage_num_str = None
-            elif 'Subject ID' in line and current_cage_num_str is not None:
-                try:
-                    subject_id = line.split(',')[-1].strip()
-                    cage_int = int(current_cage_num_str)
-                    if cage_int >= 101: # Basic CLAMS format check
-                        cage_label = f"CAGE {cage_int - 100:02d}"
-                        subject_map[cage_label] = subject_id
-                except (IndexError, ValueError): pass # Ignore parsing errors here silently for now
-                current_cage_num_str = None # Reset for next pair
+    # Skip optional data header lines ('===' or 'INTERVAL')
+    if data_header_skipped:
+        # Read lines until we are past the header indicators
+        skipped_count = 0
+        max_skips = 3 # Safety limit for skipping header lines
+        while skipped_count < max_skips:
+             line = file_wrapper.readline()
+             line_num +=1
+             line_strip = line.strip()
+             if not line_strip: continue # Skip blank lines
+             if line_strip.startswith('===') or line_strip.startswith('INTERVAL'):
+                 skipped_count += 1
+                 continue
+             else:
+                 # This is likely the first actual data line
+                 first_data_line_content = line
+                 break # Stop skipping
 
-        if not subject_map:
-            st.caption("ℹ️ No Subject ID mappings found in file header.")
+    # Read the first actual data line if not already captured
+    if first_data_line_content is None:
+         while True: # Find the first non-empty line to determine columns
+             line = file_wrapper.readline()
+             line_num += 1
+             if not line: break # End of file
+             line_strip = line.strip()
+             if line_strip:
+                 first_data_line_content = line
+                 break
 
-        # --- Section 3: Parse Data Section (Robustly) ---
-        st.write(f"--- Debug: Starting Data Parsing. Found {len(data_lines_raw)} raw data lines. ---") # Temp debug
-        all_data_cages = [] # List to hold DataFrames for each cage
-        parsing_errors = [] # Collect parsing errors
-        max_errors_to_report = 15
+    if not first_data_line_content:
+        parsing_errors.append("Error: No data lines found after header/':DATA' marker.")
+        return None, parsing_errors # Cannot proceed
 
-        # Split lines only once
-        data_lines_split = [line.split(',') for line in data_lines_raw]
+    # Determine number of columns and cages from the first data line
+    first_row_data = first_data_line_content.strip().split(',')
+    num_data_columns = len(first_row_data)
+    num_cages_detected = (num_data_columns - 1) // 2 # Assuming Interval, T1, V1, T2, V2,...
 
-        if not data_lines_split:
-            st.error("❌ Error: No data lines found after ':DATA' marker (empty data section?).")
-            return None, None, None
+    if num_cages_detected < 1:
+        parsing_errors.append(f"Error: Could not detect valid CAGE data columns. Found {num_data_columns} columns. Check file structure.")
+        parsing_errors.append(f"First data line content: {first_data_line_content.strip()}")
+        return None, parsing_errors
 
-        num_data_columns = len(data_lines_split[0])
-        num_cages_detected = (num_data_columns - 1) // 2
+    # --- Initialize data structures for cages ---
+    cage_data_lists = [{'times': [], 'values': [], 'label': f"CAGE {i+1:02d}"} for i in range(num_cages_detected)]
 
-        if num_cages_detected < 1:
-            st.error(f"❌ Error: Could not detect valid CAGE data columns. Found {num_data_columns} columns in first data row. Check file structure.")
-            st.code(f"First data line: {data_lines_raw[0]}" if data_lines_raw else "No data lines")
-            return None, None, None
+    # --- Process the first data line already read ---
+    data_lines_read += 1
+    row_data = first_row_data # Use the split data
+    for cage_idx in range(num_cages_detected):
+        time_col_idx = 1 + 2 * cage_idx
+        value_col_idx = 2 + 2 * cage_idx
+        cage_info = cage_data_lists[cage_idx]
 
-        st.write(f"--- Debug: Detected {num_cages_detected} cages based on {num_data_columns} columns. ---") # Temp debug
+        if len(row_data) <= max(time_col_idx, value_col_idx):
+             if len(parsing_errors) < max_errors_to_report: parsing_errors.append(f"L{line_num}, {cage_info['label']}: Row too short.")
+             continue
+        t_str, v_str = row_data[time_col_idx].strip(), row_data[value_col_idx].strip()
+        if not t_str or not v_str: continue
+        try: time_obj = pd.to_datetime(t_str, format='%d/%m/%Y %I:%M:%S %p')
+        except ValueError:
+            try: time_obj = pd.to_datetime(t_str, format='%m/%d/%Y %I:%M:%S %p')
+            except ValueError:
+                 if len(parsing_errors) < max_errors_to_report: parsing_errors.append(f"L{line_num}, {cage_info['label']}: Bad datetime '{t_str}'")
+                 continue
+        try:
+            value_float = float(v_str)
+            cage_info['times'].append(time_obj); cage_info['values'].append(value_float)
+        except ValueError:
+            if len(parsing_errors) < max_errors_to_report: parsing_errors.append(f"L{line_num}, {cage_info['label']}: Bad numeric value '{v_str}'")
+            continue
+
+    # --- Process remaining lines in the data section ---
+    for line in file_wrapper:
+        line_num += 1
+        data_lines_read += 1
+        line_strip = line.strip()
+        if not line_strip: continue # Skip empty lines
+
+        row_data = line_strip.split(',')
+        if len(row_data) != num_data_columns: # Check for consistent column count
+             if len(parsing_errors) < max_errors_to_report: parsing_errors.append(f"L{line_num}: Inconsistent column count ({len(row_data)} vs expected {num_data_columns}). Skipping row.")
+             continue
 
         for cage_idx in range(num_cages_detected):
-            time_col_idx = 1 + 2 * cage_idx
-            value_col_idx = 2 + 2 * cage_idx
-            current_cage_label = f"CAGE {cage_idx + 1:02d}"
-            cage_times = []
-            cage_values = []
+             time_col_idx = 1 + 2 * cage_idx
+             value_col_idx = 2 + 2 * cage_idx
+             cage_info = cage_data_lists[cage_idx]
 
-            for row_num, row_data in enumerate(data_lines_split):
-                file_line_num = data_start_line_num + (1 if data_header_skipped else 0) + row_num +1 # Approx line num
+             # No need to check row length again if we checked column consistency
+             t_str, v_str = row_data[time_col_idx].strip(), row_data[value_col_idx].strip()
+             if not t_str or not v_str: continue # Skip rows with missing time or value for this cage
+             try: time_obj = pd.to_datetime(t_str, format='%d/%m/%Y %I:%M:%S %p')
+             except ValueError:
+                 try: time_obj = pd.to_datetime(t_str, format='%m/%d/%Y %I:%M:%S %p')
+                 except ValueError:
+                      if len(parsing_errors) < max_errors_to_report: parsing_errors.append(f"L{line_num}, {cage_info['label']}: Bad datetime '{t_str}'")
+                      continue
+             try:
+                 value_float = float(v_str)
+                 cage_info['times'].append(time_obj); cage_info['values'].append(value_float)
+             except ValueError:
+                 if len(parsing_errors) < max_errors_to_report: parsing_errors.append(f"L{line_num}, {cage_info['label']}: Bad numeric value '{v_str}'")
+                 continue # Skip this cage's entry for this row if value is bad
 
-                if len(row_data) <= max(time_col_idx, value_col_idx):
-                    if len(parsing_errors) < max_errors_to_report:
-                        parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Row too short (found {len(row_data)} cols, need >{max(time_col_idx, value_col_idx)}).")
-                    continue # Skip short rows for this cage
+    # --- Create DataFrames for each cage ---
+    all_data_cages = []
+    for cage_info in cage_data_lists:
+        if cage_info['times']: # Only create DataFrame if data was actually parsed
+            cage_df = pd.DataFrame({'timestamp': cage_info['times'], 'value': cage_info['values'], 'cage': cage_info['label']})
+            all_data_cages.append(cage_df)
+        # else: # Optional: Log if a cage had no valid data points
+            # print(f"Debug: No valid data points parsed for {cage_info['label']}.")
 
-                t_str = row_data[time_col_idx].strip()
-                v_str = row_data[value_col_idx].strip()
+    if not all_data_cages:
+        parsing_errors.append("Error: Failed to extract any valid numerical data points after processing all cages.")
+        return None, parsing_errors
 
-                if not t_str or not v_str: # Skip if time or value is empty string
-                    # Optionally log this type of skipping if needed
-                    # if len(parsing_errors) < max_errors_to_report:
-                    #     parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Empty time ('{t_str}') or value ('{v_str}'). Skipping.")
-                    continue
+    # --- Concatenate, Sort, and Return ---
+    df_raw_parsed = pd.concat(all_data_cages, ignore_index=True)
+    df_raw_parsed.sort_values(by='timestamp', inplace=True)
+    df_raw_parsed.reset_index(drop=True, inplace=True)
 
-                # Robust Datetime Parsing
-                time_obj = None
-                try:
-                    time_obj = pd.to_datetime(t_str, format='%d/%m/%Y %I:%M:%S %p')
-                except ValueError:
-                    try:
-                        time_obj = pd.to_datetime(t_str, format='%m/%d/%Y %I:%M:%S %p')
-                    except ValueError:
-                        if len(parsing_errors) < max_errors_to_report:
-                            parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Bad datetime format '{t_str}'")
-                        continue # Skip row if datetime fails
+    if data_lines_read == 0:
+         parsing_errors.append("Warning: Zero data lines were read after the header.")
+         
+    # Report final count of errors if any occurred beyond the limit
+    if len(parsing_errors) >= max_errors_to_report:
+         total_errors = len(parsing_errors) # Get total count before slicing
+         # Count how many might have been missed (approximate)
+         # This requires knowing the total number of lines read AFTER the header skip
+         # Let's estimate total potential points processed
+         total_points_attempted = data_lines_read * num_cages_detected
+         # This logic is complex, let's just add a general note
+         parsing_errors.append(f"... and potentially more issues not shown (limit is {max_errors_to_report}).")
 
-                # Robust Value Parsing
-                try:
-                    value_float = float(v_str)
-                    cage_times.append(time_obj)
-                    cage_values.append(value_float)
-                except ValueError:
-                    if len(parsing_errors) < max_errors_to_report:
-                        parsing_errors.append(f"L{file_line_num}, {current_cage_label}: Bad numeric value '{v_str}'")
-                    continue # Skip row if value fails
 
-            # Create DataFrame for this cage IF valid data was found
-            if cage_times:
-                st.write(f"--- Debug: Parsed {len(cage_times)} valid points for {current_cage_label}. ---") # Temp debug
-                cage_df = pd.DataFrame({'timestamp': cage_times, 'value': cage_values, 'cage': current_cage_label})
-                all_data_cages.append(cage_df)
+    return df_raw_parsed, parsing_errors
+
+
+def filter_data_by_time_window(df_processed, selected_window, custom_days_val):
+    """Filters the DataFrame based on the selected time window."""
+    df_analysis_window = None
+    if selected_window == "Entire Dataset":
+        df_analysis_window = df_processed.copy()
+        st.caption("ℹ️ Analyzing the entire dataset.")
+    else:
+        if selected_window == "Custom Range":
+            if isinstance(custom_days_val, (int, float)) and custom_days_val >= 1:
+                days_to_analyze = int(custom_days_val)
             else:
-                 st.write(f"--- Debug: No valid data points parsed for {current_cage_label}. ---") # Temp debug
-
-
-        # --- Section 4: Report Parsing Errors ---
-        if parsing_errors:
-            num_total_errors = len(parsing_errors) # Get total count before limiting message
-            with st.expander(f"⚠️ Found {num_total_errors} data parsing issue(s). Click to see details.", expanded=False):
-                st.warning(f"Showing first {max_errors_to_report} potential issues found during data reading:")
-                error_report = "```\n" + "\n".join(parsing_errors[:max_errors_to_report]) + "\n```"
-                st.markdown(error_report)
-                # Estimate total points attempted to parse
-                total_points_attempted = len(data_lines_raw) * num_cages_detected
-                if total_points_attempted > 0 and num_total_errors / total_points_attempted > 0.1: # If > 10% error rate
-                    st.warning("**High error rate detected.** This may indicate a significant problem with the file format or structure. Please review the errors and your input file carefully.")
-
-        # --- Section 5: Concatenate and Validate Raw Data ---
-        if not all_data_cages:
-            st.error("❌ Critical Error: Failed to extract any valid numerical data points from the file after processing all cages. Cannot continue analysis.")
-            return None, None, None
-
-        df_processed = pd.concat(all_data_cages, ignore_index=True)
-        df_processed.sort_values(by='timestamp', inplace=True)
-        df_processed.reset_index(drop=True, inplace=True)
-        st.write(f"--- Debug: Concatenated data. Shape: {df_processed.shape} ---") # Temp debug
-
-        # --- Section 6: Filter by Time Window ---
-        st.write(f"--- Debug: Applying Time Filter: {st.session_state.get('time_window_radio', 'N/A')} ---") # Temp debug
-        df_analysis_window = None
-        selected_window = st.session_state.get('time_window_radio', "Entire Dataset") # Read from session state
-
-        if selected_window == "Entire Dataset":
-            df_analysis_window = df_processed.copy()
-            st.caption("ℹ️ Analyzing the entire dataset.")
+                st.warning(f"Invalid custom days value ({custom_days_val}). Defaulting to 5 days.", icon="⚠️")
+                days_to_analyze = 5
         else:
-            if selected_window == "Custom Range":
-                custom_days_val = st.session_state.get("custom_days_input") # Read custom days
-                if isinstance(custom_days_val, (int, float)) and custom_days_val >= 1:
-                    days_to_analyze = int(custom_days_val)
-                else:
-                    st.warning(f"Invalid custom days value ({custom_days_val}). Defaulting to 5 days.", icon="⚠️")
-                    days_to_analyze = 5
-            else:
-                days_to_analyze = {
-                    "Last 24 Hours": 1, "Last 48 Hours": 2, "Last 72 Hours": 3,
-                    "Last 7 Days": 7, "Last 14 Days": 14
-                }.get(selected_window)
-
+            days_map = {
+                "Last 24 Hours": 1, "Last 48 Hours": 2, "Last 72 Hours": 3,
+                "Last 7 Days": 7, "Last 14 Days": 14
+            }
+            days_to_analyze = days_map.get(selected_window)
             if days_to_analyze is None:
-                st.error(f"Internal Error: Unrecognized time window '{selected_window}'.")
-                return None, None, None
+                st.error(f"Internal Error: Unrecognized time window '{selected_window}'. Using entire dataset.")
+                return df_processed.copy() # Fallback
 
-            required_duration = pd.Timedelta(days=days_to_analyze)
-            data_start_time = df_processed['timestamp'].min()
-            data_end_time = df_processed['timestamp'].max()
-            available_duration = data_end_time - data_start_time
+        if df_processed.empty or 'timestamp' not in df_processed.columns:
+             st.error("Cannot filter by time: Input data is empty or missing 'timestamp' column.")
+             return None # Indicate failure
 
-            # Allow small tolerance (e.g., 1 hour)
-            if available_duration < (required_duration - pd.Timedelta(hours=1)):
-                st.error(f"Insufficient data for '{selected_window}' ({days_to_analyze} days required). "
-                         f"File contains only ~{available_duration.total_seconds() / 3600:.1f} hours. "
-                         "Choose a shorter window or 'Entire Dataset'.")
-                return None, None, None
+        required_duration = pd.Timedelta(days=days_to_analyze)
+        data_start_time = df_processed['timestamp'].min()
+        data_end_time = df_processed['timestamp'].max()
 
-            filter_start_time = data_end_time - required_duration
-            filter_start_time = max(filter_start_time, data_start_time)
-            df_analysis_window = df_processed.loc[
-                (df_processed['timestamp'] >= filter_start_time) &
-                (df_processed['timestamp'] <= data_end_time)
-            ].copy() # Use .loc and .copy()
+        # Check if data_start_time or data_end_time is NaT (Not a Time)
+        if pd.isna(data_start_time) or pd.isna(data_end_time):
+             st.error("Cannot filter by time: Could not determine data start/end times (possibly empty or invalid timestamps).")
+             return None # Indicate failure
+             
+        available_duration = data_end_time - data_start_time
 
-            if df_analysis_window.empty:
-                 st.error(f"❌ Error: No data remains after applying the '{selected_window}' time filter. Check data distribution within the file.")
-                 return None, None, None
+        # Allow small tolerance (e.g., 1 hour)
+        if available_duration < (required_duration - pd.Timedelta(hours=1)):
+            st.error(f"Insufficient data for '{selected_window}' ({days_to_analyze} days required). "
+                     f"File contains only ~{available_duration.total_seconds() / 3600:.1f} hours. "
+                     "Choose a shorter window or 'Entire Dataset'.")
+            return None # Indicate failure
 
-            actual_start = df_analysis_window['timestamp'].min()
-            actual_end = df_analysis_window['timestamp'].max()
-            st.caption(f"ℹ️ Analysis Time Window: {actual_start.strftime('%Y-%m-%d %H:%M')} to {actual_end.strftime('%Y-%m-%d %H:%M')} ({selected_window}).")
+        filter_start_time = data_end_time - required_duration
+        # Ensure filter doesn't go before the actual data start
+        filter_start_time = max(filter_start_time, data_start_time)
 
-        st.write(f"--- Debug: Data after time filter. Shape: {df_analysis_window.shape} ---") # Temp debug
+        df_analysis_window = df_processed.loc[
+            (df_processed['timestamp'] >= filter_start_time) &
+            (df_processed['timestamp'] <= data_end_time)
+        ].copy()
 
-        # --- Section 7: Apply Lean Mass Normalization (Conditional) ---
-        # This section reads directly from session_state as before.
-        # Refactoring this state interaction is planned for Phase 3.
-        df_final_for_calc = df_analysis_window.copy() # Start with filtered data
-        apply_adjustment_enabled = (
-            parameter_type in ["VO2", "VCO2", "HEAT"] and
-            st.session_state.get("apply_lean_mass", False)
-        )
-        st.write(f"--- Debug: Lean Mass Adjust Enabled? {apply_adjustment_enabled} ---") # Temp debug
+        if df_analysis_window.empty:
+             st.error(f"❌ Error: No data remains after applying the '{selected_window}' time filter. Check data distribution.")
+             return None # Indicate failure
 
-        if apply_adjustment_enabled:
-            st.write(f"--- Debug: Applying Lean Mass Adj. Ref Mass: {st.session_state.get('reference_lean_mass_sidebar_val', 'N/A')} ---") # Temp debug
-            lean_mass_data = st.session_state.get('lean_mass_data')
-            reference_mass_val = st.session_state.get('reference_lean_mass_sidebar_val')
+        actual_start = df_analysis_window['timestamp'].min()
+        actual_end = df_analysis_window['timestamp'].max()
+        st.caption(f"ℹ️ Analysis Time Window: {actual_start.strftime('%Y-%m-%d %H:%M')} to {actual_end.strftime('%Y-%m-%d %H:%M')} ({selected_window}).")
 
-            proceed_with_adjustment = True
-            warning_messages = []
-            if not isinstance(lean_mass_data, dict) or not lean_mass_data:
-                 warning_messages.append("Individual lean masses not entered/saved.")
-                 proceed_with_adjustment = False
-            if reference_mass_val is None or not isinstance(reference_mass_val, (int, float)) or reference_mass_val <= 0:
-                 warning_messages.append(f"Reference lean mass missing or invalid.")
-                 proceed_with_adjustment = False
+    return df_analysis_window
 
-            if not proceed_with_adjustment:
-                 st.warning(f"⚠️ Lean mass adjustment enabled, but cannot proceed: {' | '.join(warning_messages)}. Skipping adjustment.", icon="⚖️")
+
+def apply_lean_mass_adjustment(df_input, parameter_type, apply_lean_mass_flag, lean_mass_data, reference_mass_val):
+    """Applies lean mass normalization to the DataFrame if applicable and enabled."""
+    df_output = df_input.copy() # Work on a copy
+
+    # Determine if adjustment should be attempted
+    adjustment_possible = (
+        parameter_type in ["VO2", "VCO2", "HEAT"] and
+        apply_lean_mass_flag
+    )
+
+    if not adjustment_possible:
+        # If adjustment was previously applied, reset 'value' from 'original_value'
+        if 'original_value' in df_output.columns:
+            df_output['value'] = df_output['original_value']
+            # Optionally remove the original_value column if no longer needed
+            # df_output = df_output.drop(columns=['original_value'])
+            # st.caption("ℹ️ Lean mass adjustment disabled or not applicable; values reset to original.") # Optional message
+        return df_output # Return unmodified (or reset) data
+
+    # --- Proceed with Adjustment ---
+    proceed_with_adjustment = True
+    warning_messages = []
+    if not isinstance(lean_mass_data, dict) or not lean_mass_data:
+         warning_messages.append("Individual lean masses not entered/saved.")
+         proceed_with_adjustment = False
+    if reference_mass_val is None or not isinstance(reference_mass_val, (int, float)) or reference_mass_val <= 0:
+         warning_messages.append(f"Reference lean mass missing or invalid ({reference_mass_val}).")
+         proceed_with_adjustment = False
+    if 'value' not in df_output.columns:
+         warning_messages.append("Input data missing 'value' column.")
+         proceed_with_adjustment = False
+
+    if not proceed_with_adjustment:
+         st.warning(f"⚠️ Lean mass adjustment enabled, but cannot proceed: {' | '.join(warning_messages)}. Skipping adjustment.", icon="⚖️")
+         # Ensure original_value is removed if it exists but adjustment is skipped
+         if 'original_value' in df_output.columns:
+             df_output['value'] = df_output['original_value']
+             # df_output = df_output.drop(columns=['original_value'])
+         return df_output
+
+    # --- Apply the formula ---
+    reference_mass = float(reference_mass_val)
+
+    # Store original values if not already done
+    if 'original_value' not in df_output.columns:
+        df_output['original_value'] = df_output['value'].copy()
+    else: # Reset value from original before re-applying adjustment
+        df_output['value'] = df_output['original_value']
+
+    adjusted_cages_count = 0
+    skipped_cages_invalid_mass = set()
+    skipped_cages_no_mass_data = set()
+    cages_in_window = df_output['cage'].unique()
+
+    for cage_label in cages_in_window:
+        if cage_label in lean_mass_data:
+            lean_mass = lean_mass_data[cage_label]
+            # Validate lean_mass type and value
+            if isinstance(lean_mass, (int, float)) and lean_mass > 0:
+                mask = (df_output['cage'] == cage_label)
+                # Perform calculation using .loc for safe assignment
+                # Ensure original_value exists before using it
+                if 'original_value' in df_output.columns:
+                     adjustment_factor = reference_mass / lean_mass
+                     df_output.loc[mask, 'value'] = df_output.loc[mask, 'original_value'] * adjustment_factor
+                     adjusted_cages_count += 1
+                else:
+                    # This case should ideally not happen if check passed earlier
+                    st.warning(f"Logic Error: 'original_value' column missing during adjustment for {cage_label}.")
+                    skipped_cages_invalid_mass.add(cage_label) # Treat as skipped
             else:
-                reference_mass = reference_mass_val
-                if 'original_value' not in df_final_for_calc.columns:
-                    df_final_for_calc['original_value'] = df_final_for_calc['value'].copy()
-                else: # Reset value from original if re-applying
-                    df_final_for_calc['value'] = df_final_for_calc['original_value']
+                skipped_cages_invalid_mass.add(f"{cage_label} (value: {lean_mass})")
+                # Ensure value remains original if skipped
+                if 'original_value' in df_output.columns:
+                     mask = (df_output['cage'] == cage_label)
+                     df_output.loc[mask, 'value'] = df_output.loc[mask, 'original_value']
 
-                adjusted_cages_count = 0
-                skipped_cages_invalid_mass = set()
-                cages_in_window = set(df_final_for_calc['cage'].unique())
-
-                for cage_label in cages_in_window:
-                    if cage_label in lean_mass_data:
-                        lean_mass = lean_mass_data[cage_label]
-                        if isinstance(lean_mass, (int, float)) and lean_mass > 0:
-                            mask = (df_final_for_calc['cage'] == cage_label)
-                            adjustment_factor = reference_mass / lean_mass
-                            df_final_for_calc.loc[mask, 'value'] = df_final_for_calc.loc[mask, 'original_value'] * adjustment_factor
-                            adjusted_cages_count += 1
-                        else:
-                            skipped_cages_invalid_mass.add(cage_label)
-                            # Ensure value remains original if skipped due to invalid mass
-                            if 'original_value' in df_final_for_calc.columns:
-                                 mask = (df_final_for_calc['cage'] == cage_label)
-                                 df_final_for_calc.loc[mask, 'value'] = df_final_for_calc.loc[mask, 'original_value']
-
-                    else: # Cage in data, but no mass provided
-                         if 'original_value' in df_final_for_calc.columns:
-                                 mask = (df_final_for_calc['cage'] == cage_label)
-                                 df_final_for_calc.loc[mask, 'value'] = df_final_for_calc.loc[mask, 'original_value']
+        else: # Cage in data, but no mass provided in lean_mass_data dict
+             skipped_cages_no_mass_data.add(cage_label)
+             # Ensure value remains original if skipped
+             if 'original_value' in df_output.columns:
+                     mask = (df_output['cage'] == cage_label)
+                     df_output.loc[mask, 'value'] = df_output.loc[mask, 'original_value']
 
 
-                # Report status
-                if adjusted_cages_count > 0:
-                     st.info(f"⚖️ Lean mass normalization applied to {adjusted_cages_count} cage(s) using reference mass: {reference_mass:.1f}g.", icon="✅")
-                elif proceed_with_adjustment:
-                     st.warning("❓ Lean mass adjustment enabled, data present, but no cages adjusted (check cage IDs/masses).", icon="❓")
-                if skipped_cages_invalid_mass:
-                     st.warning(f"❌ Adjustment skipped for cage(s) {skipped_cages_invalid_mass} due to invalid/zero mass value(s).", icon="❌")
-                # ... (optional: report on cages with mass provided but not in data) ...
-        else: # Adjustment not enabled
-            if 'original_value' in df_final_for_calc.columns: # Reset if previously adjusted
-                df_final_for_calc['value'] = df_final_for_calc['original_value']
-                st.write("--- Debug: Lean mass disabled, reset 'value' from 'original_value'. ---") # Temp debug
+    # Report status
+    if adjusted_cages_count > 0:
+         st.success(f"⚖️ Lean mass normalization applied to {adjusted_cages_count} cage(s) using reference mass: {reference_mass:.1f}g.", icon="✅")
+    elif proceed_with_adjustment: # Adjustment was attempted but nothing happened
+         st.warning("❓ Lean mass adjustment enabled, data present, but no cages adjusted. Check lean mass inputs and cage IDs.", icon="❓")
 
+    if skipped_cages_invalid_mass:
+         st.warning(f"❌ Adjustment skipped for cage(s) {', '.join(sorted(list(skipped_cages_invalid_mass)))} due to invalid/zero mass value(s). Using original body weight values.", icon="❌")
+    if skipped_cages_no_mass_data:
+         st.warning(f"❌ Adjustment not applied for cage(s) {', '.join(sorted(list(skipped_cages_no_mass_data)))} as no lean mass was provided. Using original body weight values.", icon="❌")
+    # ... (optional: report on cages with mass provided but not in filtered data) ...
 
-        st.write(f"--- Debug: Data after potential lean mass adj. Shape: {df_final_for_calc.shape} ---") # Temp debug
-        st.write(df_final_for_calc[['timestamp', 'cage', 'value']].head()) # Debug head
+    return df_output
 
-        # --- Section 8: Add Light/Dark Info ---
-        df_final_for_calc['hour'] = df_final_for_calc['timestamp'].dt.hour
-        light_start = st.session_state.get('light_start', 7) # Read from session state
-        light_end = st.session_state.get('light_end', 19)   # Read from session state
-        df_final_for_calc['is_light'] = (df_final_for_calc['hour'] >= light_start) & (df_final_for_calc['hour'] < light_end)
+def add_light_dark_info(df_input, light_start, light_end):
+    """Adds 'hour' and 'is_light' columns based on timestamp and settings."""
+    if df_input is None or df_input.empty or 'timestamp' not in df_input.columns:
+        st.warning("Cannot add light/dark info: Input data is invalid.")
+        return df_input # Return input, possibly None
 
-        # --- Section 9 & 10: Calculate Summary & Hourly Metrics ---
-        # The core calculation logic remains similar to your original code,
-        # but now operates on the validated and potentially normalized 'df_final_for_calc'.
-        st.write(f"--- Debug: Calculating metrics for Param: {parameter_type} ---") # Temp debug
-        results = None
-        hourly_results = None
+    df_output = df_input.copy()
+    try:
+        df_output['hour'] = df_output['timestamp'].dt.hour
+        df_output['is_light'] = (df_output['hour'] >= light_start) & (df_output['hour'] < light_end)
+    except AttributeError:
+         st.error("Error adding light/dark info: 'timestamp' column might not contain datetime objects.")
+         # Return the DataFrame without the new columns if error occurs
+         return df_input
+    except Exception as e:
+         st.error(f"Unexpected error adding light/dark info: {e}")
+         return df_input
 
-        # Using df_final_for_calc for all calculations now
-        calc_df = df_final_for_calc
+    return df_output
 
+def calculate_summary_metrics(df_with_cycle_info, parameter_type, subject_map):
+    """Calculates summary results (light/dark/total) based on parameter type."""
+    results = None
+    if df_with_cycle_info is None or df_with_cycle_info.empty:
+        st.error("Cannot calculate summary metrics: Input data is empty.")
+        return None
+
+    calc_df = df_with_cycle_info # Use the prepared DataFrame
+
+    try:
         # Activity Parameters
         if parameter_type in ["XTOT", "XAMB", "YTOT", "YAMB", "ZTOT", "ZAMB"]:
-            results = calc_df.groupby(['cage', 'is_light'])['value'].agg(
+            # Calculate stats per animal per cycle first
+            cycle_stats = calc_df.groupby(['cage', 'is_light'])['value'].agg(
                 Average_Activity='mean', Peak_Activity='max', Total_Counts='sum'
-            ).unstack(fill_value=0)
-            if results.columns.nlevels > 1:
+            ).unstack(fill_value=0) # Fill missing cycles with 0 for activity counts
+
+            # Check if unstacking created multi-level columns and flatten
+            if isinstance(cycle_stats.columns, pd.MultiIndex):
                 new_columns = {}
-                for metric, is_light in results.columns:
+                for metric, is_light in cycle_stats.columns:
                     cycle_name = "Light" if is_light else "Dark"
                     metric_name_cleaned = metric.replace("_", " ")
                     new_columns[(metric, is_light)] = f"{cycle_name} {metric_name_cleaned}"
-                results.columns = list(new_columns.values())
+                cycle_stats.columns = list(new_columns.values())
+            results = cycle_stats
+
+            # Calculate overall 24h averages and totals directly
             results['24h Average'] = calc_df.groupby('cage')['value'].mean()
             results['24h Total Counts'] = calc_df.groupby('cage')['value'].sum()
-            results = results.fillna(0)
+            results = results.fillna(0) # Fill any remaining NaNs (e.g., if a cage had no data at all)
 
         # Feed Parameter (Accumulated)
         elif parameter_type == "FEED":
             results_list = []
             processed_cages = calc_df['cage'].unique()
+            # Sort by time *within* each cage for accurate diff calculation
             calc_df_sorted = calc_df.sort_values(by=['cage', 'timestamp'])
+
             for cage in processed_cages:
                 cage_data = calc_df_sorted[calc_df_sorted['cage'] == cage]
                 cage_results = {"Cage": cage}
-                if len(cage_data) > 1: cage_results['Total Intake (Period)'] = cage_data['value'].iloc[-1] - cage_data['value'].iloc[0]
-                else: cage_results['Total Intake (Period)'] = 0
+
+                # Calculate total intake over the entire period for the cage
+                if len(cage_data) > 1:
+                    cage_results['Total Intake (Period)'] = cage_data['value'].iloc[-1] - cage_data['value'].iloc[0]
+                elif len(cage_data) == 1:
+                     cage_results['Total Intake (Period)'] = 0 # Or maybe NaN? Consider definition for single point.
+                else:
+                    cage_results['Total Intake (Period)'] = 0 # No data
+
+                # Calculate intake during Light cycle
                 light_data = cage_data[cage_data['is_light']]
-                if len(light_data) > 1: cage_results['Light Cycle Intake'] = light_data['value'].iloc[-1] - light_data['value'].iloc[0]
-                else: cage_results['Light Cycle Intake'] = 0
+                if len(light_data) > 1:
+                    cage_results['Light Cycle Intake'] = light_data['value'].iloc[-1] - light_data['value'].iloc[0]
+                elif len(light_data) == 1:
+                     cage_results['Light Cycle Intake'] = 0
+                else:
+                    cage_results['Light Cycle Intake'] = 0
+
+                # Calculate intake during Dark cycle
                 dark_data = cage_data[~cage_data['is_light']]
-                if len(dark_data) > 1: cage_results['Dark Cycle Intake'] = dark_data['value'].iloc[-1] - dark_data['value'].iloc[0]
-                else: cage_results['Dark Cycle Intake'] = 0
+                if len(dark_data) > 1:
+                    cage_results['Dark Cycle Intake'] = dark_data['value'].iloc[-1] - dark_data['value'].iloc[0]
+                elif len(dark_data) == 1:
+                     cage_results['Dark Cycle Intake'] = 0
+                else:
+                    cage_results['Dark Cycle Intake'] = 0
+
                 results_list.append(cage_results)
 
             if results_list:
                 results = pd.DataFrame(results_list).set_index("Cage")
-                results = results.round(4)
-            else: # Handle case where no results could be generated
+                results = results.round(4) # Round feed values
+            else:
                 results = pd.DataFrame(columns=['Total Intake (Period)', 'Light Cycle Intake', 'Dark Cycle Intake'])
-
 
         # Accumulated Gas Parameters
         elif parameter_type in ["ACCCO2", "ACCO2"]:
+            # Sort by time *within* each cage
             calc_df_sorted = calc_df.sort_values(by=['cage', 'timestamp'])
+
+            # Get first and last value for each animal within each cycle
             cycle_bounds = calc_df_sorted.groupby(['cage', 'is_light'])['value'].agg(['first', 'last'])
-            cycle_diff = (cycle_bounds['last'] - cycle_bounds['first']).unstack()
+
+            # Calculate the difference (net change) during each cycle
+            cycle_diff = (cycle_bounds['last'] - cycle_bounds['first']).unstack(fill_value=0) # Fill missing cycles with 0 change
             cols_rename_acc = {True: 'Light Net Accumulated', False: 'Dark Net Accumulated'}
             results = cycle_diff.rename(columns=cols_rename_acc)
+
+            # Calculate the total net change over the whole period
             total_bounds = calc_df_sorted.groupby('cage')['value'].agg(['first', 'last'])
-            results['Total Net Accumulated (Period)'] = total_bounds['last'] - total_bounds['first']
-            results = results.fillna(0).round(4)
+            # Handle cases where a cage might only have one data point total
+            results['Total Net Accumulated (Period)'] = np.where(
+                 total_bounds['last'].notna() & total_bounds['first'].notna(),
+                 total_bounds['last'] - total_bounds['first'],
+                 0 # Or NaN, if preferred for single points
+            )
+
+            results = results.fillna(0).round(4) # Fill NaNs that might arise from unstacking if a cage had no data
 
         # Default (Metabolic, Other Gases, Environmental - Averages)
         else:
-            results = calc_df.groupby(['cage', 'is_light'])['value'].mean().unstack()
+            # Calculate mean value per animal per cycle
+            # Use unstack(fill_value=np.nan) so missing cycles don't become 0 average
+            results = calc_df.groupby(['cage', 'is_light'])['value'].mean().unstack(fill_value=np.nan)
             cols_to_rename = {False: 'Dark Average', True: 'Light Average'}
             results = results.rename(columns=cols_to_rename)
+
             # Calculate TRUE Total Average directly from all points for the cage
             results['Total Average'] = calc_df.groupby('cage')['value'].mean()
+
             # Apply rounding based on parameter type
             round_digits = 3 if parameter_type == "RER" else 2
             cols_to_round = [col for col in ['Dark Average', 'Light Average', 'Total Average'] if col in results.columns]
-            if cols_to_round: results[cols_to_round] = results[cols_to_round].round(round_digits)
-            # Let NaNs persist for averages (do not fillna(0))
+            if cols_to_round:
+                results[cols_to_round] = results[cols_to_round].round(round_digits)
+            # NaNs for missing cycles will persist, which is correct for averages.
 
-
-        # Add Subject IDs to results table
+        # --- Add Subject IDs to results table ---
         if results is not None:
-            results['Subject ID'] = results.index.map(subject_map)
-            if results['Subject ID'].isnull().any():
-                missing_cages = results[results['Subject ID'].isnull()].index.tolist()
-                st.warning(f"❓ Could not find Subject ID mapping for cages: {missing_cages}", icon="❓")
+            # Ensure index has a name for mapping (usually 'cage' or 'Cage')
+             if results.index.name is None: results.index.name = 'Cage' # Assign default name if missing
+             # Map subject IDs using the provided subject_map dictionary
+             results['Subject ID'] = results.index.map(subject_map)
+             # Check if any mappings failed (resulting in NaN)
+             if results['Subject ID'].isnull().any():
+                 missing_cages = results[results['Subject ID'].isnull()].index.tolist()
+                 st.warning(f"❓ Could not find Subject ID mapping for cages: {missing_cages}", icon="❓")
         else:
-            # Handle case where results is None (e.g., failed FEED calculation)
-             st.error("❌ Error: Failed to generate the main summary results table.")
-             return None, None, None
+            # Handle case where results DataFrame is None (e.g., failed calculation)
+             st.error("❌ Error: Failed to generate the main summary results table internally.")
+             return None # Return None to indicate failure
 
-        # Calculate Hourly Results
-        try:
-            hourly_results = calc_df.pivot_table(
-                values='value', index='hour', columns='cage', aggfunc='mean'
-            )
-            all_hours = pd.Index(range(24), name='hour')
-            hourly_results = hourly_results.reindex(all_hours) # Ensure 0-23 hours exist
+    except KeyError as e:
+         st.error(f"Error calculating summary metrics: Missing expected column '{e}'. Check data preparation.")
+         return None
+    except Exception as e:
+         st.error(f"An unexpected error occurred during summary metric calculation: {e}")
+         import traceback
+         st.code(traceback.format_exc())
+         return None
 
-            # Rename columns to Subject IDs if possible
-            # Use cage labels directly if subject_map is empty or fails
+    return results
+
+
+def calculate_hourly_metrics(df_with_cycle_info, parameter_type, subject_map):
+    """Calculates hourly results (0-23 profile)."""
+    hourly_results = None
+    if df_with_cycle_info is None or df_with_cycle_info.empty:
+        st.error("Cannot calculate hourly metrics: Input data is empty.")
+        return None
+    if 'hour' not in df_with_cycle_info.columns or 'cage' not in df_with_cycle_info.columns or 'value' not in df_with_cycle_info.columns:
+        st.error("Cannot calculate hourly metrics: Missing required columns ('hour', 'cage', 'value').")
+        return None
+
+    calc_df = df_with_cycle_info
+
+    try:
+        # Pivot table to get mean value per hour per cage
+        hourly_results = calc_df.pivot_table(
+            values='value', index='hour', columns='cage', aggfunc='mean'
+        )
+
+        # Ensure all hours 0-23 are present, fill missing hours with NaN
+        all_hours = pd.Index(range(24), name='hour')
+        hourly_results = hourly_results.reindex(all_hours)
+
+        # Rename columns from cage labels (e.g., "CAGE 01") to Subject IDs if possible
+        # Use cage labels as fallback if subject_map is empty or mapping fails
+        if subject_map:
             subject_id_map_for_hourly = {cage: subject_map.get(cage, cage) for cage in hourly_results.columns}
             hourly_results = hourly_results.rename(columns=subject_id_map_for_hourly)
+        # else: Keep cage labels as column names
 
-            # Calculate Mean and SEM across animals for each hour
-            hourly_results['Mean'] = hourly_results.mean(axis=1)
-            hourly_n = hourly_results.drop(columns=['Mean'], errors='ignore').count(axis=1)
-            hourly_std = hourly_results.drop(columns=['Mean'], errors='ignore').std(axis=1)
-            hourly_results['SEM'] = np.where(hourly_n > 0, hourly_std / np.sqrt(hourly_n), 0)
+        # Calculate Mean and SEM across animals for each hour
+        # Ensure we only calculate across actual animal columns (ignore potential Mean/SEM if rerun)
+        animal_columns = [col for col in hourly_results.columns if col not in ['Mean', 'SEM']]
+        if not animal_columns:
+             st.warning("No animal columns found in hourly data for Mean/SEM calculation.")
+             hourly_results['Mean'] = np.nan
+             hourly_results['SEM'] = np.nan
+        else:
+            hourly_results['Mean'] = hourly_results[animal_columns].mean(axis=1)
+            # Calculate SEM robustly (N is the number of non-NaN values for that hour)
+            hourly_n = hourly_results[animal_columns].count(axis=1)
+            hourly_std = hourly_results[animal_columns].std(axis=1)
+            # Avoid division by zero if N is 0 or 1
+            hourly_results['SEM'] = np.where(hourly_n > 1, hourly_std / np.sqrt(hourly_n), 0) # SEM is 0 if N<=1
 
-            # Apply Rounding
-            round_digits_hourly = 3 if parameter_type == "RER" else 2
-            hourly_results = hourly_results.round(round_digits_hourly)
+        # Apply Rounding
+        round_digits_hourly = 3 if parameter_type == "RER" else 2
+        # Round only numeric columns to avoid errors on potential non-numeric ones if subject rename failed etc.
+        numeric_cols = hourly_results.select_dtypes(include=np.number).columns
+        hourly_results[numeric_cols] = hourly_results[numeric_cols].round(round_digits_hourly)
 
-        except Exception as e_hourly:
-             st.error(f"❌ Error calculating hourly results: {e_hourly}")
-             hourly_results = None # Ensure it's None if calculation fails
-
-        # --- Section 11: Final Validation and Return ---
-        if results is None or hourly_results is None:
-            st.error("❌ Error: Failed to generate summary or hourly results tables.")
-            return None, None, None
-
-        st.write("--- Debug: Exiting process_clams_data Successfully ---") # Temp debug
-        # Return the calculated results and the final DataFrame used for calculations
-        return results, hourly_results, calc_df
-
-    # --- Main Exception Handler ---
+    except KeyError as e:
+         st.error(f"Error calculating hourly results: Missing expected column '{e}'.")
+         return None
     except Exception as e:
-        st.error(f"❌ An unexpected critical error occurred during data processing: {e}")
+         st.error(f"An unexpected error occurred during hourly metric calculation: {e}")
+         import traceback
+         st.code(traceback.format_exc())
+         return None
+
+    return hourly_results
+
+def load_and_process_clams_data(uploaded_file, parameter_type, session_state):
+    """
+    Orchestrates the loading, parsing, and processing of CLAMS data.
+    # ... (rest of docstring) ...
+
+    Returns:
+        tuple: (results_df, hourly_results_df, final_processed_data_df, status_messages_list, parsing_errors_list)
+               Returns (None, None, None, list, list) with appropriate messages on failure.
+               'status_messages_list' contains tuples: ('type', 'message') where type is 'info', 'success', 'warning', 'error', 'debug'.
+               'parsing_errors_list' contains strings of parsing errors.
+    """
+    # --- Initialize lists to collect messages ---
+    status_messages = []
+    parsing_errors = [] # We already have this for parsing errors, keep it.
+    results_df, hourly_results_df, df_with_cycle_info = None, None, None # Initialize return variables
+
+    status_messages.append(('info', "--- Running New Processing Pipeline ---")) # Store message instead of writing
+
+    # --- Step 1: Parse Header ---
+    try:
+        uploaded_file.seek(0)
+        wrapper = io.TextIOWrapper(uploaded_file, encoding='utf-8', errors='ignore')
+        header_lines, subject_map, data_start_line, data_header_skipped = _parse_clams_header(wrapper)
+        wrapper.detach() # Release wrapper, keep file open
+
+        if data_start_line is None: # Critical error already displayed in helper
+            status_messages.append(('error', "Fatal error during header parsing: ':DATA' marker not found.")) # Log error
+            return None, None, None, status_messages, parsing_errors # Return immediately on critical failure
+    except Exception as e:
+        status_messages.append(('error', f"Fatal error during header parsing: {e}"))
+        return None, None, None, status_messages, parsing_errors # Return immediately
+
+    # --- Step 2: Parse Data Section ---
+    try:
+        uploaded_file.seek(0) # Rewind again for data parsing
+        wrapper = io.TextIOWrapper(uploaded_file, encoding='utf-8', errors='ignore')
+        # Use the 'parsing_errors' list initialized at the start
+        df_raw_parsed, parsing_errors = _parse_clams_data_section(wrapper, data_start_line, data_header_skipped)
+        wrapper.detach()
+        
+        # --- Step 3: Handle Parsing Outcome ---
+        # removed the expander display from here. It will be handled outside.
+
+        if df_raw_parsed is None:
+            status_messages.append(('error', "❌ Critical Error: Failed to parse numerical data section. Cannot continue analysis."))
+            # Include parsing errors in the return
+            return None, None, None, status_messages, parsing_errors
+        else:
+            # Only add debug message if parsing succeeded
+            status_messages.append(('debug', f"Parsed data shape: {df_raw_parsed.shape}"))
+
+    except Exception as e:
+        status_messages.append(('error', f"Fatal error during data section parsing: {e}"))
         import traceback
-        st.error("Traceback:")
+        status_messages.append(('debug', traceback.format_exc())) # Log traceback for debugging
+        return None, None, None, status_messages, parsing_errors
+
+
+        if df_raw_parsed is None:
+            st.error("❌ Critical Error: Failed to parse numerical data section. Cannot continue analysis.")
+            return None, None, None
+        st.write(f"--- Debug: Parsed data shape: {df_raw_parsed.shape} ---") # Debug
+
+    except Exception as e:
+        st.error(f"Fatal error during data section parsing: {e}")
+        import traceback
         st.code(traceback.format_exc())
         return None, None, None
+
+    # --- Step 4: Filter by Time Window ---
+    selected_window = session_state.get('time_window_radio', "Entire Dataset")
+    custom_days = session_state.get("custom_days_input", 5) # Default custom days
+    df_analysis_window = filter_data_by_time_window(df_raw_parsed, selected_window, custom_days)
+
+    if df_analysis_window is None:
+        status_messages.append(('error', "❌ Processing stopped: Failed to filter data by time window."))
+        return None, None, None, status_messages, parsing_errors
+    else:
+        status_messages.append(('debug', f"Filtered data shape: {df_analysis_window.shape}"))
+        # Add the informative time window message here
+        if selected_window == "Entire Dataset":
+            status_messages.append(('info', "ℹ️ Analyzing the entire dataset."))
+        else:
+            try:
+                actual_start = df_analysis_window['timestamp'].min()
+                actual_end = df_analysis_window['timestamp'].max()
+                status_messages.append(('info', f"ℹ️ Analysis Time Window: {actual_start.strftime('%Y-%m-%d %H:%M')} to {actual_end.strftime('%Y-%m-%d %H:%M')} ({selected_window})."))
+            except: pass # Ignore if we can't get timestamps
+
+    # --- Step 5: Apply Lean Mass Adjustment ---
+    apply_lm_flag = session_state.get("apply_lean_mass", False)
+    lean_mass_map = session_state.get('lean_mass_data', {})
+    ref_mass = session_state.get('reference_lean_mass_sidebar_val', None)
+    df_normalized = apply_lean_mass_adjustment(df_analysis_window, parameter_type, apply_lm_flag, lean_mass_map, ref_mass)
+
+    if df_normalized is None: # Should not happen if input was valid, but check anyway
+         status_messages.append(('error', "❌ Processing stopped: Failed during lean mass adjustment step."))
+         return None, None, None, status_messages, parsing_errors
+    else:
+         status_messages.append(('debug', f"Data after lean mass step shape: {df_normalized.shape}"))
+         try: # Add try-except for safety
+             status_messages.append(('debug', f"Value stats after LM: Mean={df_normalized['value'].mean():.2f}, Min={df_normalized['value'].min():.2f}, Max={df_normalized['value'].max():.2f}"))
+         except Exception as e:
+             status_messages.append(('warning', f"Could not calculate post-LM stats: {e}"))
+
+    # --- Step 6: Add Light/Dark Info ---
+    light_start = session_state.get('light_start', 7)
+    light_end = session_state.get('light_end', 19)
+    df_with_cycle_info = add_light_dark_info(df_normalized, light_start, light_end)
+
+    if df_with_cycle_info is None:
+        status_messages.append(('error', "❌ Processing stopped: Failed to add light/dark cycle information."))
+        return None, None, None, status_messages, parsing_errors
+
+    # --- Step 7: Calculate Summary Metrics ---
+    results_df = calculate_summary_metrics(df_with_cycle_info, parameter_type, subject_map)
+
+    if results_df is None:
+        status_messages.append(('error', "❌ Processing stopped: Failed to calculate summary metrics."))
+        return None, None, None, status_messages, parsing_errors
+
+    # --- Step 8: Calculate Hourly Metrics ---
+    hourly_results_df = calculate_hourly_metrics(df_with_cycle_info, parameter_type, subject_map)
+
+    if hourly_results_df is None:
+        status_messages.append(('error', "❌ Processing stopped: Failed to calculate hourly metrics."))
+        return None, None, None, status_messages, parsing_errors # Fail completely if hourly fails
+
+    # --- Step 9: Return Results ---
+    status_messages.append(('success', "✅ Data processing pipeline completed successfully!"))
+    status_messages.append(('info', "--- End New Processing Pipeline ---"))
+
+    # --- MODIFIED RETURN STATEMENT ---
+    # Return the results AND the collected messages/errors
+    return results_df, hourly_results_df, df_with_cycle_info, status_messages, parsing_errors
     
 def assign_groups(cage_df, key_prefix=''):
     """
@@ -2627,9 +2943,57 @@ if uploaded_file is not None:
         # Get cage information for lean mass inputs
         cage_info = extract_cage_info(uploaded_file)
           
-        # Process data first
         with st.spinner('Processing data...'):
-            results, hourly_results, raw_data = process_clams_data(uploaded_file, parameter)
+            # Updated line to receive 5 values
+            results, hourly_results, processed_data, status_messages, parsing_errors = load_and_process_clams_data(uploaded_file, parameter, st.session_state)
+        # --- Display Processing Status Messages and Errors ---
+        st.markdown("---") # Separator after spinner
+        st.subheader("Data Processing Log")
+
+        # Add a checkbox to control debug message visibility (optional, good practice)
+        show_debug = st.checkbox("Show Debug Messages", key="show_debug_toggle_tab1", value=False) # Default to hidden
+
+        # Display parsing errors first, if any
+        if parsing_errors:
+            num_total_errors = sum(1 for error in parsing_errors if not error.startswith("..."))
+            if num_total_errors > 0:
+                    error_display_list = parsing_errors[:15] # Limit display
+                    # Use an expander specifically for parsing errors within the log section
+                    with st.expander(f"⚠️ Found {num_total_errors} data parsing issue(s). Click to see details.", expanded=True): # Default expanded
+                        st.warning(f"Showing first {len(error_display_list)} potential issues found during data reading:")
+                        error_report = "```\n" + "\n".join(error_display_list) + "\n```"
+                        st.markdown(error_report)
+
+        # Display status messages collected from the processing function
+        if status_messages:
+            for msg_type, msg_content in status_messages:
+                if msg_type == 'info':
+                    st.info(msg_content, icon="ℹ️")
+                elif msg_type == 'success':
+                    st.success(msg_content, icon="✅")
+                elif msg_type == 'warning':
+                    st.warning(msg_content, icon="⚠️")
+                elif msg_type == 'error':
+                    st.error(msg_content, icon="❌")
+                elif msg_type == 'debug':
+                    if show_debug: # Only show debug if checkbox is ticked
+                        st.caption(f"🐞 DEBUG: {msg_content}") # Use caption for debug
+                else: # Fallback for unknown types
+                    st.write(f"{msg_type.upper()}: {msg_content}")
+        else:
+            st.info("No status messages reported from processing.") # Should not happen if list is initialized
+
+        st.markdown("---") # Separator after the log section
+        # --- End Display Processing Status Messages ---
+        
+        
+        if results is not None and hourly_results is not None and processed_data is not None:
+             # rename 'processed_data' to 'analysis_input_data' here for better clarity
+             # raw_data usually implies the absolute initial state, this data has been processed (filtered, normalized etc.)
+             analysis_input_data = processed_data
+             # We also need to make sure the variable 'raw_data' (used later) still gets assigned
+             # For now, let's assign it the same thing. I wil see if I *truly* raw data later.
+             raw_data = analysis_input_data # TEMPORARY - might need adjustment later if true raw data is needed elsewhere.
             
         if results is not None:
             # Tab 1: Overview
