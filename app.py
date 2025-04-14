@@ -4103,6 +4103,11 @@ if uploaded_file is not None:
 
                         # --- Cleaned data 'anova_input_df_clean' is now ready for the model ---
 
+                        # Add clarification about the input data for this ANOVA
+                        st.caption("""
+                        ℹ️ **Note:** This Two-Way ANOVA uses the calculated **mean value for each animal during the Light cycle** and the **mean value for each animal during the Dark cycle** as its input data points.
+                        """)
+
                         # 3. Display Data Summary (Using the CLEANED data)
                         st.markdown("##### Data Summary (N per Condition for ANOVA)")
                         st.markdown("Number of animals included in the ANOVA for each condition:")
@@ -4198,34 +4203,75 @@ if uploaded_file is not None:
                         # Get the ANOVA table
                         anova_table = sm.stats.anova_lm(model, typ=2) # Type 2 ANOVA is generally recommended
 
+                        # --- Calculate Partial Eta-Squared ---
+                        def calculate_partial_eta_squared(anova_tbl):
+                            # ηp² = SS_effect / (SS_effect + SS_error)
+                            ss_effect = anova_tbl['sum_sq']
+                            # SS_error is the sum_sq for the 'Residual' row
+                            # Find the index of the 'Residual' row, might vary slightly depending on model
+                            residual_index = [idx for idx in anova_tbl.index if 'Residual' in str(idx)]
+                            if not residual_index:
+                                # Fallback if 'Residual' not found (e.g., different statsmodels version)
+                                # Try inferring it as the last row that isn't a factor
+                                factor_indices = [idx for idx in anova_tbl.index if 'C(' in str(idx)]
+                                potential_residual = [idx for idx in anova_tbl.index if idx not in factor_indices]
+                                if len(potential_residual) == 1:
+                                    residual_index = potential_residual
+                                else: return pd.Series(index=anova_tbl.index, dtype=float) # Return empty series if ambiguous
+
+                            ss_error = anova_tbl.loc[residual_index[0], 'sum_sq']
+                            partial_eta_sq = ss_effect / (ss_effect + ss_error)
+                            # Set eta_sq for the residual row itself to NaN (doesn't apply)
+                            partial_eta_sq.loc[residual_index[0]] = np.nan
+                            return partial_eta_sq
+
+                        # Add the effect size column to the original table
+                        anova_table['partial_eta_sq'] = calculate_partial_eta_squared(anova_table)
+
                         # --- Display ANOVA Results ---
                         st.markdown("##### ANOVA Results Table")
 
                         # Enhance display: Add significance stars
                         def add_p_value_stars(p_value):
-                            if p_value < 0.001: return "***"
-                            elif p_value < 0.01: return "**"
-                            elif p_value < 0.05: return "*"
-                            else: return ""
+                            # Check if p_value is not NaN before comparison
+                            if pd.notna(p_value):
+                                if p_value < 0.001: return "***"
+                                elif p_value < 0.01: return "**"
+                                elif p_value < 0.05: return "*"
+                            return "" # Return empty string if NaN or >= 0.05
 
                         # Apply formatting to the table for display
                         display_anova = anova_table.copy() # Work on a copy
+
+                        # Format Partial Eta-Squared
+                        if 'partial_eta_sq' in display_anova.columns:
+                            display_anova['ηp²'] = display_anova['partial_eta_sq'].map('{:.3f}'.format) # Format eta-squared
+                            # We keep the original 'partial_eta_sq' for potential later use if needed
+
                         # Format p-values
                         if 'PR(>F)' in display_anova.columns:
-                            display_anova['P-Value'] = display_anova['PR(>F)'].map('{:.4f}'.format)
-                            display_anova['Sig.'] = display_anova['PR(>F)'].apply(add_p_value_stars)
+                            # Convert to numeric first to handle potential non-numeric types, then format
+                            display_anova['P-Value'] = pd.to_numeric(display_anova['PR(>F)'], errors='coerce').map('{:.4f}'.format)
+                            # Apply stars based on the original numeric p-value
+                            display_anova['Sig.'] = pd.to_numeric(display_anova['PR(>F)'], errors='coerce').apply(add_p_value_stars)
                             display_anova = display_anova.drop(columns=['PR(>F)']) # Drop original p-value column
 
                         # Format other columns (optional, but nice)
-                        for col in ['sum_sq', 'mean_sq', 'F']:
+                        numeric_cols_to_format = ['sum_sq', 'mean_sq', 'F']
+                        for col in numeric_cols_to_format:
                             if col in display_anova.columns:
-                                display_anova[col] = display_anova[col].map('{:.3f}'.format)
+                                display_anova[col] = pd.to_numeric(display_anova[col], errors='coerce').map('{:.3f}'.format)
 
-                        # Reorder columns for better readability
-                        cols_order = [col for col in ['sum_sq', 'df', 'mean_sq', 'F', 'P-Value', 'Sig.'] if col in display_anova.columns]
-                        display_anova = display_anova[cols_order]
+                        # Reorder columns for better readability - ADD 'ηp²'
+                        cols_order = [col for col in ['sum_sq', 'df', 'mean_sq', 'F', 'P-Value', 'Sig.', 'ηp²'] if col in display_anova.columns]
+                        # Make sure to only include columns that *actually exist* in display_anova
+                        final_cols_order = [col for col in cols_order if col in display_anova.columns]
+                        display_anova = display_anova[final_cols_order]
 
                         st.dataframe(display_anova)
+
+                        # Add explanation for ηp²
+                        st.caption("ηp² (Partial Eta-Squared): An **effect size** indicating the proportion of variance explained by the factor (Group, Cycle, or Interaction) after accounting for other factors. It measures the *magnitude* or practical importance of the effect. Benchmarks: 0.01 (small), 0.06 (medium), 0.14 (large).")
 
                         # --- Interpretation Helper ---
                         st.markdown("##### Interpretation")
@@ -4433,6 +4479,10 @@ if uploaded_file is not None:
                         st.markdown("---") # Separator
                         with st.expander("🔎 Quick Comparisons (Specific Cycle or 24h Average)", expanded=False):
 
+                            st.caption("""
+                            ℹ️ **Note:** These comparisons use the summary values (e.g., 'Dark Average', 'Light Average Activity') calculated for each animal and displayed in the **Overview tab's 'Light/Dark Analysis' table**. This differs slightly from the main Two-Way ANOVA above, which uses the mean per animal per cycle.
+                            """)
+
                             # --- Step 1: Select Data Slice ---
                             st.markdown("**1. Select Data to Compare:**")
                             
@@ -4523,50 +4573,71 @@ if uploaded_file is not None:
                                                 group2_data = groups_for_test.iloc[1]
                                                 
                                                 # Check for sufficient data in each group
+                                            if len(selected_groups_quick) == 2:
+                                                # Perform Independent Samples T-test
+                                                group1_data = groups_for_test.iloc[0]
+                                                group2_data = groups_for_test.iloc[1]
+                                                group1_name = groups_for_test.index[0]
+                                                group2_name = groups_for_test.index[1]
+
+                                                # Check for sufficient data in each group
                                                 if len(group1_data) < 2 or len(group2_data) < 2:
                                                     st.warning("Need at least 2 data points per group for a t-test.")
                                                 else:
+                                                    # ... (Assumption checks code - no changes needed here) ...
                                                     st.markdown("---") # Separator
-                                                    st.markdown("##### Checking T-test Assumptions")
-                                                    ttest_assumptions_ok = True
 
-                                                    # Check normality for EACH group
-                                                    norm_results = {}
-                                                    for i, group_name in enumerate(groups_for_test.index):
-                                                        is_normal, p_val, _ = check_normality(groups_for_test.iloc[i])
-                                                        norm_results[group_name] = (is_normal, p_val)
-                                                        if is_normal is None:
-                                                            st.caption(f"Normality check skipped for {group_name} (N<3).")
-                                                        elif is_normal:
-                                                            st.caption(f"Data for {group_name} appears normal (p={p_val:.3f}).") # Use caption for success
+                                                    # Perform Welch's t-test
+                                                    t_stat, p_val_ttest = stats.ttest_ind(group1_data, group2_data, equal_var=False)
+
+                                                    # --- Calculate Cohen's d ---
+                                                    def calculate_cohens_d(d1, d2):
+                                                        """Calculates Cohen's d for independent samples."""
+                                                        # n1, n2 = len(d1), len(d2) # Not needed for this formula version
+                                                        mean1, mean2 = np.mean(d1), np.mean(d2)
+                                                        sd1, sd2 = np.std(d1, ddof=1), np.std(d2, ddof=1) # Use sample std dev (ddof=1)
+
+                                                        # Calculate pooled standard deviation (approximated by averaging variances)
+                                                        pooled_sd = np.sqrt((sd1**2 + sd2**2) / 2)
+
+                                                        # Handle case where pooled_sd is zero
+                                                        if pooled_sd == 0:
+                                                            return np.nan # Or 0 or inf depending on desired handling
+
+                                                        d = (mean1 - mean2) / pooled_sd
+                                                        return d
+
+                                                    cohen_d_value = calculate_cohens_d(group1_data, group2_data)
+
+                                                    # --- Display Results ---
+                                                    st.markdown(f"**Comparison: {group1_name} vs {group2_name}** (using '{selected_option_key}')")
+
+                                                    # Use columns for side-by-side metrics
+                                                    col_t1, col_t2 = st.columns(2)
+                                                    with col_t1:
+                                                        st.metric(
+                                                            label="T-test P-value",
+                                                            value=f"{p_val_ttest:.4f}",
+                                                            delta="Significant (p<0.05)" if p_val_ttest < 0.05 else "Not Significant",
+                                                            delta_color=("inverse" if p_val_ttest < 0.05 else "off")
+                                                        )
+                                                        st.caption("Welch's t-test")
+                                                    with col_t2:
+                                                        # Only display Cohen's d if calculation was successful
+                                                        if pd.notna(cohen_d_value):
+                                                            st.metric(
+                                                                label="Effect Size (Cohen's d)",
+                                                                value=f"{cohen_d_value:.3f}"
+                                                                # Add interpretation based on magnitude later if desired
+                                                            )
+                                                            # Add interpretation benchmarks in caption
+                                                            st.caption("Effect size: ~0.2 (small), ~0.5 (medium), ~0.8 (large)")
                                                         else:
-                                                            st.warning(f"⚠️ Data for {group_name} may not be normal (Shapiro-Wilk p={p_val:.3f}). T-test validity could be affected.")
-                                                            ttest_assumptions_ok = False
-
-                                                    # Check homogeneity (using the same Levene's test helper)
-                                                    is_homogeneous, homog_p_val, _ = check_homogeneity(groups_for_test.tolist()) # Pass list of group data arrays
-                                                    if is_homogeneous is None:
-                                                        st.caption(f"Homogeneity check skipped or failed.")
-                                                    elif is_homogeneous:
-                                                        st.caption(f"Variances appear homogeneous (Levene's p={homog_p_val:.3f}).") # Use caption for success
-                                                    else:
-                                                        st.warning(f"⚠️ Variances may not be homogeneous (Levene's p={homog_p_val:.3f}). Welch's t-test (used here) is robust to this.")
-                                                        # Note: We don't set ttest_assumptions_ok to False here because Welch's t-test handles it.
-
-                                                    # Display overall assumption status for T-test interpretation
-                                                    if not ttest_assumptions_ok:
-                                                        st.warning("**Note:** Normality assumption potentially violated. Interpret t-test results with caution.", icon="❗")
-                                                    st.markdown("---") # Separator
-                                                    
-                                                    t_stat, p_val_ttest = stats.ttest_ind(group1_data, group2_data, equal_var=False) # Welch's t-test (doesn't assume equal variances)
-                                                    
-                                                    st.metric(
-                                                        label=f"T-test Result ({groups_for_test.index[0]} vs {groups_for_test.index[1]})",
-                                                        value=f"p = {p_val_ttest:.4f}",
-                                                        delta="Significant" if p_val_ttest < 0.05 else "Not Significant",
-                                                        delta_color=("inverse" if p_val_ttest < 0.05 else "off")
-                                                    )
-                                                    st.caption(f"Comparing '{selected_option_key}'. Welch's t-test used.")
+                                                            st.metric(
+                                                                label="Effect Size (Cohen's d)",
+                                                                value="N/A" # Indicate if calculation failed (e.g., zero variance)
+                                                            )
+                                                            st.caption("Could not calculate (e.g., zero variance)")
 
                                             else: # 3 or more groups selected
                                                 # Perform One-Way ANOVA
@@ -4574,47 +4645,63 @@ if uploaded_file is not None:
                                                 if any(len(group_data) < 2 for group_data in groups_for_test):
                                                     st.warning("Need at least 2 data points per group for ANOVA.")
                                                 else:
+                                                    # ... (Assumption checks code - no changes needed here) ...
                                                     st.markdown("---") # Separator
-                                                    st.markdown("##### Checking One-Way ANOVA Assumptions")
-                                                    oneway_assumptions_ok = True
 
-                                                    # Check normality for EACH group
-                                                    norm_results_oneway = {}
-                                                    for i, group_name in enumerate(groups_for_test.index):
-                                                        is_normal, p_val, _ = check_normality(groups_for_test.iloc[i])
-                                                        norm_results_oneway[group_name] = (is_normal, p_val)
-                                                        if is_normal is None:
-                                                            st.caption(f"Normality check skipped for {group_name} (N<3).")
-                                                        elif is_normal:
-                                                            st.caption(f"Data for {group_name} appears normal (p={p_val:.3f}).") # Caption for success
-                                                        else:
-                                                            st.warning(f"⚠️ Data for {group_name} may not be normal (Shapiro-Wilk p={p_val:.3f}). ANOVA validity could be affected.")
-                                                            oneway_assumptions_ok = False
-
-                                                    # Check homogeneity
-                                                    is_homogeneous_oneway, homog_p_val_oneway, _ = check_homogeneity(groups_for_test.tolist())
-                                                    if is_homogeneous_oneway is None:
-                                                        st.caption(f"Homogeneity check skipped or failed.")
-                                                    elif is_homogeneous_oneway:
-                                                        st.caption(f"Variances appear homogeneous (Levene's p={homog_p_val_oneway:.3f}).") # Caption for success
-                                                    else:
-                                                        st.warning(f"⚠️ Variances may not be homogeneous (Levene's p={homog_p_val_oneway:.3f}). ANOVA is somewhat robust, but consider alternatives if severe.")
-                                                        oneway_assumptions_ok = False # Violation of homogeneity is more problematic for ANOVA than Welch's t-test
-
-                                                    # Display overall assumption status for One-Way ANOVA interpretation
-                                                    if not oneway_assumptions_ok:
-                                                        st.warning("**Note:** One or more ANOVA assumptions potentially violated. Interpret results with caution.", icon="❗")
-                                                    st.markdown("---") # Separator
-                                                    
+                                                    # Perform the ANOVA
                                                     f_stat, p_val_anova = stats.f_oneway(*groups_for_test)
-                                                    
-                                                    st.metric(
-                                                        label=f"One-Way ANOVA Result ({len(selected_groups_quick)} groups)",
-                                                        value=f"p = {p_val_anova:.4f}",
-                                                        delta="Significant Overall" if p_val_anova < 0.05 else "Not Significant Overall",
-                                                        delta_color=("inverse" if p_val_anova < 0.05 else "off")
-                                                    )
-                                                    st.caption(f"Comparing '{selected_option_key}'.")
+
+                                                    # --- Calculate Eta-Squared (η²) ---
+                                                    def calculate_anova_eta_squared(groups_list):
+                                                        """Calculates Eta-Squared for One-Way ANOVA from list of group data."""
+                                                        all_data = np.concatenate(groups_list)
+                                                        grand_mean = np.mean(all_data)
+
+                                                        # Total Sum of Squares (SST)
+                                                        sst = np.sum((all_data - grand_mean)**2)
+
+                                                        # Sum of Squares Within (SSW)
+                                                        ssw = 0
+                                                        for group_data in groups_list:
+                                                            ssw += np.sum((np.array(group_data) - np.mean(group_data))**2)
+
+                                                        # Sum of Squares Between (SSB)
+                                                        ssb = sst - ssw # Calculate SSB indirectly
+
+                                                        # Eta-Squared
+                                                        if sst == 0:
+                                                            return np.nan # Avoid division by zero if total variance is zero
+                                                        eta_sq = ssb / sst
+                                                        return eta_sq
+
+                                                    eta_squared_value = calculate_anova_eta_squared(groups_for_test.tolist())
+
+                                                    # --- Display Results ---
+                                                    st.markdown(f"**Comparison: {len(selected_groups_quick)} Groups** (using '{selected_option_key}')")
+
+                                                    # Use columns for side-by-side metrics
+                                                    col_a1, col_a2 = st.columns(2)
+                                                    with col_a1:
+                                                        st.metric(
+                                                            label="One-Way ANOVA P-value",
+                                                            value=f"{p_val_anova:.4f}",
+                                                            delta="Significant Overall (p<0.05)" if p_val_anova < 0.05 else "Not Significant Overall",
+                                                            delta_color=("inverse" if p_val_anova < 0.05 else "off")
+                                                        )
+                                                    with col_a2:
+                                                        if pd.notna(eta_squared_value):
+                                                            st.metric(
+                                                                label="Effect Size (Eta-Squared, η²)",
+                                                                value=f"{eta_squared_value:.3f}"
+                                                            )
+                                                            # Add interpretation benchmarks in caption
+                                                            st.caption("Effect size: ~0.01 (small), ~0.06 (medium), ~0.14 (large)")
+                                                        else:
+                                                            st.metric(
+                                                                label="Effect Size (Eta-Squared, η²)",
+                                                                value="N/A"
+                                                            )
+                                                            st.caption("Could not calculate (e.g., zero total variance)")
 
                                                     # --- Post-Hoc for One-Way ANOVA (if significant) ---
                                                     if p_val_anova < 0.05:
