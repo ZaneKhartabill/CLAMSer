@@ -27,41 +27,6 @@ def toggle_lean_mass_state():
     # Optional: Add a print here to see when the callback fires
     print(f"Callback toggled apply_lean_mass to: {st.session_state.apply_lean_mass}")
     
-# NEW Callback function to apply lean mass changes from inputs
-def apply_lean_mass_changes():
-    print("--- apply_lean_mass_changes callback triggered ---") # Debug
-    # Ensure cage_info exists in session state before proceeding
-    if 'cage_info' not in st.session_state or not st.session_state['cage_info']:
-        st.warning("Cannot apply lean mass changes: Cage information is missing.")
-        print("Error: cage_info missing in apply_lean_mass_changes") # Debug
-        return # Exit the callback
-
-    # Create a temporary dictionary to hold the latest values
-    latest_lean_mass_data = {}
-    found_keys = True
-    for cage_label in st.session_state['cage_info'].keys():
-        widget_key = f"lean_mass_{cage_label}_setup_expander"
-        # Read the current value directly from the session state associated with the number_input's key
-        if widget_key in st.session_state:
-            latest_lean_mass_data[cage_label] = st.session_state[widget_key]
-        else:
-            # This case should ideally not happen if the inputs were rendered, but good for robustness
-            print(f"Warning: Widget key '{widget_key}' not found in session state for {cage_label}.")
-            # Optionally try getting default or skip
-            latest_lean_mass_data[cage_label] = st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0) # Fallback maybe? Or error?
-            found_keys=False
-            
-    if not found_keys:
-         st.warning("Could not read values for all lean mass inputs. Please ensure they were displayed correctly.", icon="⚠️")
-
-    # Update the main session state dictionary that process_clams_data uses
-    st.session_state['lean_mass_data'] = latest_lean_mass_data
-    print(f"Updated st.session_state['lean_mass_data'] to: {st.session_state['lean_mass_data']}") # Debug
-
-    # Now trigger the rerun to re-process data with the new values
-    st.rerun()
-
-# ------------- END JUMBO MUMBO -------------
 
 
 # ------------- NEW: Statistical Assumption Check Helpers -------------
@@ -2129,7 +2094,22 @@ def load_and_process_clams_data(uploaded_file, parameter_type, session_state):
 
     # --- Step 5: Apply Lean Mass Adjustment ---
     apply_lm_flag = session_state.get("apply_lean_mass", False)
-    lean_mass_map = session_state.get('lean_mass_data', {})
+    
+    # --- Construct lean_mass_map dynamically from widget states ---
+    lean_mass_map = {}
+    # Check if cage_info exists and is valid before trying to build the map
+    # Access session_state directly here as it's passed into the function
+    if 'cage_info' in session_state and isinstance(session_state['cage_info'], dict):
+        for cage_label in session_state['cage_info'].keys():
+            widget_key = f"lean_mass_{cage_label}_setup_expander"
+            # Read the value directly from the widget's state key using session_state dict
+            # Provide a default (e.g., 20.0) if the key somehow doesn't exist yet
+            lean_mass_map[cage_label] = session_state.get(widget_key, 20.0)
+    else:
+        # Log a warning message (or handle appropriately)
+        status_messages.append(('warning', "Cannot build lean mass map: Cage information not found in session state."))
+    # Now, lean_mass_map contains the *latest* values from the widgets
+
     ref_mass = session_state.get('reference_lean_mass_sidebar_val', None)
     df_normalized = apply_lean_mass_adjustment(df_analysis_window, parameter_type, apply_lm_flag, lean_mass_map, ref_mass)
 
@@ -3600,41 +3580,48 @@ if uploaded_file is not None:
                                     if st.session_state.get("apply_lean_mass", False):
                                         # Message indicating adjustment is enabled
                                         st.markdown(f"""
-                                        Lean mass adjustment is **enabled** (sidebar setting). Enter values below and click 'Apply Lean Mass Changes' to update the analysis. Reference mass: **{st.session_state.get('reference_lean_mass_sidebar_val', 20.0):.1f}g** (set in sidebar).
+                                        Lean mass adjustment is **enabled** (sidebar setting). Enter values below and click **'Apply Lean Mass Changes'** at the bottom of this section to update the analysis. Reference mass: **{st.session_state.get('reference_lean_mass_sidebar_val', 20.0):.1f}g** (set in sidebar).
                                         """)
 
                                         if cage_info_available: # Use the flag from the check above
-                                            cols = st.columns(3)
-                                            # --- THIS IS THE LOOP FOR NUMBER INPUTS ---
-                                            # These inputs update their OWN state via their key on change.
-                                            for i, (cage_label, subject_id) in enumerate(st.session_state['cage_info'].items()):
-                                                widget_key = f"lean_mass_{cage_label}_setup_expander"
-                                                with cols[i % 3]:
-                                                    # The value displayed comes from the widget's own state key
-                                                    st.number_input(
-                                                        f"LM (g) for {subject_id} ({cage_label})", # Shortened label
-                                                        min_value=1.0,
-                                                        # Set initial value from lean_mass_data if available, else default
-                                                        value=st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0),
-                                                        step=0.1,
-                                                        format="%.1f",
-                                                        key=widget_key, # Crucial: Each input has a unique key
-                                                        label_visibility="visible" # Ensure label is shown
-                                                    )
-                                            # --- END OF THE LOOP ---
+                                            # --- START FORM ---
+                                            with st.form(key="lean_mass_update_form"):
+                                                cols = st.columns(3)
+                                                # --- THIS IS THE LOOP FOR NUMBER INPUTS (Now inside the form) ---
+                                                for i, (cage_label, subject_id) in enumerate(st.session_state['cage_info'].items()):
+                                                    widget_key = f"lean_mass_{cage_label}_setup_expander"
+                                                    with cols[i % 3]:
+                                                        # The value displayed comes from the widget's own state key
+                                                        st.number_input(
+                                                            f"LM (g) for {subject_id} ({cage_label})", # Shortened label
+                                                            min_value=1.0,
+                                                            # Set initial value from lean_mass_data if available, else default
+                                                            # READ THE VALUE DIRECTLY FROM THE WIDGET STATE KEY
+                                                            value=st.session_state.get(widget_key, # Use the specific widget key
+                                                                                    st.session_state.get('lean_mass_data', {}).get(cage_label, 20.0)), # Fallback logic if widget key not set yet
+                                                            step=0.1,
+                                                            format="%.1f",
+                                                            key=widget_key, # Crucial: Each input has a unique key
+                                                            label_visibility="visible" # Ensure label is shown
+                                                        )
+                                                # --- END OF THE LOOP ---
 
-                                            # --- ADD THE BUTTON ---
-                                            # This button's callback will read all number inputs and trigger the rerun
-                                            st.button("Apply Lean Mass Changes",
-                                                    on_click=apply_lean_mass_changes, # Use the new callback
-                                                    key="apply_lm_button",
-                                                    help="Click to update the analysis tables and plots with the lean mass values entered above.")
-                                            # --- END OF ADDED BUTTON ---
+                                                # --- FORM SUBMIT BUTTON (Replaces the old button) ---
+                                                submitted = st.form_submit_button(
+                                                    "Apply Lean Mass Changes",
+                                                    help="Click to update the analysis with the lean mass values entered above."
+                                                )
+                                                # Optional: You can add logic here that runs *only* immediately after submission if needed,
+                                                # but the main data reload happens automatically on the rerun triggered by the submission.
+                                                # if submitted:
+                                                #     st.toast("Lean mass values submitted for recalculation!", icon="✅") # Example toast
+                                            # --- END FORM ---
 
-                                            # Formula caption (no change needed)
+                                            # Move the caption outside the form
                                             st.caption(f"""
                                             **Formula:** Adj. Value = Orig. Value × (Reference Mass ÷ Animal LM)...
                                             """)
+
                                         else:
                                             st.warning("Cannot display lean mass inputs: Cage information missing.")
 
