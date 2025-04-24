@@ -70,5 +70,5 @@ If you want to run the application on your own machine:
 
 This tool was developed to aid metabolic research. Questions, bug reports, or feedback are welcome!
 
-*   Feel free to open an **Issue** on this GitHub repository for bugs or feature suggestions, many thanks.
+*   Feel free to open an **Issue** on this GitHub repository for bugs or feature suggestions.
 
