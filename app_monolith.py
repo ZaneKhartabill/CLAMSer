@@ -18,7 +18,6 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols
 from scikit_posthocs import posthoc_ttest
 
-# ------------- JUMBO MUMBO FOR LEAN MASS STUFF -------------
 
 # Callback function to toggle the lean mass state
 def toggle_lean_mass_state():
@@ -27,8 +26,6 @@ def toggle_lean_mass_state():
     # Optional: Add a print here to see when the callback fires
     print(f"Callback toggled apply_lean_mass to: {st.session_state.apply_lean_mass}")
     
-
-
 # ------------- NEW: Statistical Assumption Check Helpers -------------
 
 def check_normality(data, alpha=0.05):
@@ -98,6 +95,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
 st.markdown("""
     <style>
     [data-testid="stSidebar"] {
